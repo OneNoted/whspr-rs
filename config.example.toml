@@ -1,0 +1,29 @@
+# whspr-rs configuration
+# Copy to ~/.config/whspr-rs/config.toml and customize
+#
+# Keybinding is handled by your compositor. Example for Hyprland:
+#   bind = SUPER ALT, D, exec, whspr-rs
+#
+# First invocation starts recording, second invocation stops + transcribes + pastes.
+
+[audio]
+# Input device name (empty = system default)
+device = ""
+# Sample rate in Hz (whisper requires 16000)
+sample_rate = 16000
+
+[whisper]
+# Path to ggml whisper model file
+# Recommended: large-v3-turbo (best accuracy/speed tradeoff, 1.6GB)
+# Alternatives: ggml-large-v3.bin (most accurate, 6x slower)
+#               ggml-large-v3-turbo-q5_0.bin (quantized, 574MB, slightly less accurate)
+model_path = "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin"
+# Language code ("en", "fr", "de", etc.)
+language = "auto"
+
+[feedback]
+# Play sound feedback on start/stop
+enabled = true
+# Custom sound file paths (empty = use bundled sounds)
+start_sound = ""
+stop_sound = ""
