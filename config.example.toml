@@ -1,0 +1,31 @@
+# whspr-rs configuration
+# Copy to ~/.config/whspr-rs/config.toml and customize
+
+[hotkey]
+# evdev key names for the hotkey combo
+keys = ["KEY_LEFTMETA", "KEY_LEFTSHIFT"]
+# "toggle" (press to start/stop) or "push_to_talk" (hold to record)
+mode = "toggle"
+
+[audio]
+# Input device name (empty = system default)
+device = ""
+# Sample rate in Hz (whisper requires 16000)
+sample_rate = 16000
+
+[whisper]
+# Path to ggml whisper model file
+model_path = "~/.local/share/whspr-rs/ggml-base.en.bin"
+# Language code ("en", "fr", "de", etc.)
+language = "en"
+
+[inject]
+# Text injection method
+method = "clipboard"
+
+[feedback]
+# Play sound feedback on start/stop
+enabled = true
+# Custom sound file paths (empty = use bundled sounds)
+start_sound = ""
+stop_sound = ""
