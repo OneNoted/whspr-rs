@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, SampleRate, StreamConfig};
+use cpal::{SampleFormat, StreamConfig};
 
 use crate::config::AudioConfig;
 use crate::error::{Result, WhsprError};
@@ -31,8 +31,8 @@ impl AudioRecorder {
             host.input_devices()
                 .map_err(|e| WhsprError::Audio(format!("failed to enumerate input devices: {e}")))?
                 .find(|d| {
-                    d.name()
-                        .map(|n| n.contains(&self.config.device))
+                    d.description()
+                        .map(|desc| desc.name().contains(&self.config.device))
                         .unwrap_or(false)
                 })
                 .ok_or_else(|| {
@@ -43,12 +43,12 @@ impl AudioRecorder {
                 })?
         };
 
-        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+        let device_name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "unknown".into());
         tracing::info!("using input device: {device_name}");
 
         let stream_config = StreamConfig {
             channels: 1,
-            sample_rate: SampleRate(self.config.sample_rate),
+            sample_rate: self.config.sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -60,8 +60,8 @@ impl AudioRecorder {
         let mut found_matching = false;
         for cfg in supported {
             if cfg.channels() == 1
-                && cfg.min_sample_rate().0 <= self.config.sample_rate
-                && cfg.max_sample_rate().0 >= self.config.sample_rate
+                && cfg.min_sample_rate() <= self.config.sample_rate
+                && cfg.max_sample_rate() >= self.config.sample_rate
                 && cfg.sample_format() == SampleFormat::F32
             {
                 found_matching = true;

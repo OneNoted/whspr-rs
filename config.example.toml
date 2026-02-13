@@ -21,10 +21,6 @@ model_path = "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin"
 # Language code ("en", "fr", "de", etc.)
 language = "auto"
 
-[inject]
-# Text injection method
-method = "clipboard"
-
 [feedback]
 # Play sound feedback on start/stop
 enabled = true

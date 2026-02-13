@@ -266,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-extern "C" fn handle_signal(_sig: libc::c_int) {
+unsafe extern "C" fn handle_signal(_sig: libc::c_int) {
     SHOULD_EXIT.store(true, Ordering::Relaxed);
 }
 
@@ -277,7 +277,7 @@ fn start_audio_capture(level: Arc<AudioLevel>) -> Option<cpal::Stream> {
     let device = host.default_input_device()?;
     let config = cpal::StreamConfig {
         channels: 1,
-        sample_rate: cpal::SampleRate(16000),
+        sample_rate: 16000,
         buffer_size: cpal::BufferSize::Default,
     };
 

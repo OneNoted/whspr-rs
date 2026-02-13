@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{Decoder, OutputStreamBuilder, Sink};
 
 use crate::error::{Result, WhsprError};
 
@@ -58,11 +58,10 @@ impl FeedbackPlayer {
 }
 
 fn play_sound(custom_path: Option<&str>, bundled: &'static [u8]) -> Result<()> {
-    let (_stream, handle) = OutputStream::try_default()
+    let stream = OutputStreamBuilder::open_default_stream()
         .map_err(|e| WhsprError::Feedback(format!("failed to open audio output: {e}")))?;
 
-    let sink = Sink::try_new(&handle)
-        .map_err(|e| WhsprError::Feedback(format!("failed to create sink: {e}")))?;
+    let sink = Sink::connect_new(&stream.mixer());
 
     if let Some(path) = custom_path {
         let file = std::fs::File::open(path)

@@ -1,8 +1,8 @@
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use evdev::uinput::VirtualDeviceBuilder;
-use evdev::{AttributeSet, EventType, InputEvent, Key};
+use evdev::uinput::VirtualDevice;
+use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
 
 use crate::error::{Result, WhsprError};
 
@@ -21,12 +21,12 @@ impl TextInjector {
 
         // Create uinput device early so it registers with the compositor
         // while wl-copy + clipboard delay run in parallel
-        let mut keys = AttributeSet::<Key>::new();
-        keys.insert(Key::KEY_LEFTCTRL);
-        keys.insert(Key::KEY_LEFTSHIFT);
-        keys.insert(Key::KEY_V);
+        let mut keys = AttributeSet::<KeyCode>::new();
+        keys.insert(KeyCode::KEY_LEFTCTRL);
+        keys.insert(KeyCode::KEY_LEFTSHIFT);
+        keys.insert(KeyCode::KEY_V);
 
-        let mut device = VirtualDeviceBuilder::new()
+        let mut device = VirtualDevice::builder()
             .map_err(|e| WhsprError::Injection(format!("uinput: {e}")))?
             .name("whspr-rs-keyboard")
             .with_keys(&keys)
@@ -67,12 +67,12 @@ impl TextInjector {
         // Ctrl down, Shift down, V press+release, Shift up, Ctrl up
         device
             .emit(&[
-                InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 1),
-                InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 1),
-                InputEvent::new(EventType::KEY, Key::KEY_V.code(), 1),
-                InputEvent::new(EventType::KEY, Key::KEY_V.code(), 0),
-                InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 0),
-                InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 0),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTCTRL.0, 1),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTSHIFT.0, 1),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_V.0, 1),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_V.0, 0),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTSHIFT.0, 0),
+                InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTCTRL.0, 0),
             ])
             .map_err(|e| WhsprError::Injection(format!("paste keystroke: {e}")))?;
 
