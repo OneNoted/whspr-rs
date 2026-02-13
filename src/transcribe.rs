@@ -105,7 +105,12 @@ impl WhisperLocal {
     fn transcribe_chunk(&self, audio: &[f32]) -> Result<String> {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
-        params.set_language(Some(&self.language));
+        if self.language == "auto" {
+            params.set_language(None);
+        } else {
+            params.set_language(Some(&self.language));
+        }
+        params.set_translate(false);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
