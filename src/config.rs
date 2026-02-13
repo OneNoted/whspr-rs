@@ -6,25 +6,10 @@ use crate::error::{Result, WhsprError};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub hotkey: HotkeyConfig,
     pub audio: AudioConfig,
     pub whisper: WhisperConfig,
     pub inject: InjectConfig,
     pub feedback: FeedbackConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct HotkeyConfig {
-    pub keys: Vec<String>,
-    pub mode: HotkeyMode,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HotkeyMode {
-    Toggle,
-    PushToTalk,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,27 +43,11 @@ pub struct FeedbackConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hotkey: HotkeyConfig::default(),
             audio: AudioConfig::default(),
             whisper: WhisperConfig::default(),
             inject: InjectConfig::default(),
             feedback: FeedbackConfig::default(),
         }
-    }
-}
-
-impl Default for HotkeyConfig {
-    fn default() -> Self {
-        Self {
-            keys: vec!["KEY_LEFTMETA".into(), "KEY_LEFTSHIFT".into()],
-            mode: HotkeyMode::Toggle,
-        }
-    }
-}
-
-impl Default for HotkeyMode {
-    fn default() -> Self {
-        Self::Toggle
     }
 }
 

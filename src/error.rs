@@ -11,9 +11,6 @@ pub enum WhsprError {
     #[error("injection error: {0}")]
     Injection(String),
 
-    #[error("hotkey error: {0}")]
-    Hotkey(String),
-
     #[error("config error: {0}")]
     Config(String),
 

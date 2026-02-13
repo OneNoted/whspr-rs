@@ -17,8 +17,8 @@ whisper-rs = "0.14"
 # Wayland clipboard
 wl-clipboard-rs = "0.9"
 
-# Input device handling (hotkeys + uinput paste)
-evdev = { version = "0.12", features = ["tokio"] }
+# uinput virtual keyboard for paste keystroke
+evdev = { version = "0.12" }
 
 # Sound feedback
 rodio = { version = "0.20", default-features = false, features = ["wav"] }
@@ -44,5 +44,5 @@ async-trait = "0.1"
 # Shell expansion for paths
 shellexpand = "3"
 
-# Nix for uinput
-nix = { version = "0.29", features = ["ioctl", "fs"] }
+# Signal sending for PID-based toggle
+libc = "0.2"

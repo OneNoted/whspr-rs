@@ -1,11 +1,10 @@
 # whspr-rs configuration
 # Copy to ~/.config/whspr-rs/config.toml and customize
-
-[hotkey]
-# evdev key names for the hotkey combo
-keys = ["KEY_LEFTMETA", "KEY_LEFTSHIFT"]
-# "toggle" (press to start/stop) or "push_to_talk" (hold to record)
-mode = "toggle"
+#
+# Keybinding is handled by your compositor. Example for Hyprland:
+#   bind = SUPER ALT, D, exec, whspr-rs
+#
+# First invocation starts recording, second invocation stops + transcribes + pastes.
 
 [audio]
 # Input device name (empty = system default)
