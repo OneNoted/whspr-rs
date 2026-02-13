@@ -1,6 +1,8 @@
+use std::process::{Child, Command};
+
 use crate::audio::AudioRecorder;
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Result, WhsprError};
 use crate::feedback::FeedbackPlayer;
 use crate::inject::TextInjector;
 use crate::transcribe::{TranscriptionBackend, WhisperLocal};
@@ -16,7 +18,15 @@ pub async fn run(config: Config) -> Result<()> {
     let mut recorder = AudioRecorder::new(&config.audio);
     recorder.start()?;
     feedback.play_start();
+    let mut osd = spawn_osd();
     tracing::info!("recording... (run whspr-rs again to stop)");
+
+    // Preload whisper model in background while recording
+    let whisper_config = config.whisper.clone();
+    let model_path = config.resolved_model_path();
+    let model_handle = tokio::task::spawn_blocking(move || {
+        WhisperLocal::new(&whisper_config, &model_path)
+    });
 
     // Wait for SIGUSR1 (second invocation) or SIGINT/SIGTERM
     let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
@@ -30,26 +40,30 @@ pub async fn run(config: Config) -> Result<()> {
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("interrupted, cancelling");
+            kill_osd(&mut osd);
             recorder.stop()?;
             return Ok(());
         }
         _ = sigterm.recv() => {
             tracing::info!("terminated, cancelling");
+            kill_osd(&mut osd);
             recorder.stop()?;
             return Ok(());
         }
     }
 
     // Stop recording
+    kill_osd(&mut osd);
     feedback.play_stop();
     let audio = recorder.stop()?;
     let sample_rate = config.audio.sample_rate;
 
     tracing::info!("transcribing {} samples...", audio.len());
 
-    // Load model and transcribe
-    let model_path = config.resolved_model_path();
-    let backend = WhisperLocal::new(&config.whisper, &model_path)?;
+    // Await preloaded model (instant if it finished during recording)
+    let backend = model_handle
+        .await
+        .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
 
     let text = backend.transcribe(&audio, sample_rate).await?;
 
@@ -65,4 +79,35 @@ pub async fn run(config: Config) -> Result<()> {
 
     tracing::info!("done");
     Ok(())
+}
+
+fn spawn_osd() -> Option<Child> {
+    // Look for whspr-osd next to our own binary first, then fall back to PATH
+    let osd_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("whspr-osd")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| "whspr-osd".into());
+
+    match Command::new(&osd_path).spawn() {
+        Ok(child) => {
+            tracing::debug!("spawned whspr-osd (pid {})", child.id());
+            Some(child)
+        }
+        Err(e) => {
+            tracing::warn!("failed to spawn whspr-osd from {}: {e}", osd_path.display());
+            None
+        }
+    }
+}
+
+fn kill_osd(child: &mut Option<Child>) {
+    if let Some(mut c) = child.take() {
+        let pid = c.id();
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        let _ = c.wait();
+        tracing::debug!("whspr-osd (pid {pid}) terminated");
+    }
 }

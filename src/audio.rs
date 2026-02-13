@@ -109,7 +109,7 @@ impl AudioRecorder {
         // Drop the stream to stop recording
         self.stream.take();
 
-        let buffer = self.buffer.lock().unwrap().clone();
+        let buffer = std::mem::take(&mut *self.buffer.lock().unwrap());
         tracing::info!("audio recording stopped, captured {} samples", buffer.len());
 
         if buffer.is_empty() {

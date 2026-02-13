@@ -19,6 +19,21 @@ impl TextInjector {
             return Ok(());
         }
 
+        // Create uinput device early so it registers with the compositor
+        // while wl-copy + clipboard delay run in parallel
+        let mut keys = AttributeSet::<Key>::new();
+        keys.insert(Key::KEY_LEFTCTRL);
+        keys.insert(Key::KEY_LEFTSHIFT);
+        keys.insert(Key::KEY_V);
+
+        let mut device = VirtualDeviceBuilder::new()
+            .map_err(|e| WhsprError::Injection(format!("uinput: {e}")))?
+            .name("whspr-rs-keyboard")
+            .with_keys(&keys)
+            .map_err(|e| WhsprError::Injection(format!("uinput keys: {e}")))?
+            .build()
+            .map_err(|e| WhsprError::Injection(format!("uinput build: {e}")))?;
+
         // Set text-only clipboard via wl-copy (stdin pipe, plain text MIME only)
         let mut wl_copy = Command::new("wl-copy")
             .stdin(Stdio::piped())
@@ -44,25 +59,10 @@ impl TextInjector {
             )));
         }
 
-        // Wait for compositor to process the clipboard offer
+        // Wait for compositor to process the clipboard offer.
+        // The uinput device was created above, so it has already been
+        // registering during the wl-copy write — no separate 60ms wait needed.
         tokio::time::sleep(Duration::from_millis(120)).await;
-
-        // Send Ctrl+Shift+V via uinput virtual keyboard
-        let mut keys = AttributeSet::<Key>::new();
-        keys.insert(Key::KEY_LEFTCTRL);
-        keys.insert(Key::KEY_LEFTSHIFT);
-        keys.insert(Key::KEY_V);
-
-        let mut device = VirtualDeviceBuilder::new()
-            .map_err(|e| WhsprError::Injection(format!("uinput: {e}")))?
-            .name("whspr-rs-keyboard")
-            .with_keys(&keys)
-            .map_err(|e| WhsprError::Injection(format!("uinput keys: {e}")))?
-            .build()
-            .map_err(|e| WhsprError::Injection(format!("uinput build: {e}")))?;
-
-        // Wait for compositor to recognize the virtual device
-        tokio::time::sleep(Duration::from_millis(60)).await;
 
         // Ctrl down, Shift down, V press+release, Shift up, Ctrl up
         device

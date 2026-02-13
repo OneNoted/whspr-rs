@@ -43,3 +43,21 @@ shellexpand = "3"
 
 # Signal sending for PID-based toggle
 libc = "0.2"
+
+# OSD overlay (whspr-osd binary) — wayland-native, no GTK
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["client"], optional = true }
+wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
+
+[features]
+default = ["osd"]
+osd = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-protocols-wlr"]
+
+[[bin]]
+name = "whspr-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "whspr-osd"
+path = "src/bin/whspr-osd.rs"
+required-features = ["osd"]
