@@ -17,6 +17,9 @@ pub enum WhsprError {
     #[error("feedback error: {0}")]
     Feedback(String),
 
+    #[error("download error: {0}")]
+    Download(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

@@ -44,6 +44,13 @@ shellexpand = "3"
 # Signal sending for PID-based toggle
 libc = "0.2"
 
+# Model downloading and management
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+indicatif = "0.17"
+futures-util = "0.3"
+toml_edit = "0.22"
+dialoguer = { version = "0.11", default-features = false }
+
 # OSD overlay (whspr-osd binary) — wayland-native, no GTK
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols = { version = "0.32", features = ["client"], optional = true }

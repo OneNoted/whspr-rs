@@ -1,9 +1,12 @@
 mod app;
 mod audio;
+mod cli;
 mod config;
 mod error;
 mod feedback;
 mod inject;
+mod model;
+mod setup;
 mod transcribe;
 
 use std::path::PathBuf;
@@ -11,19 +14,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use crate::cli::{Cli, Command, ModelAction};
 use crate::config::Config;
-
-#[derive(Parser, Debug)]
-#[command(name = "whspr-rs", version, about = "Speech-to-text dictation tool for Wayland")]
-struct Cli {
-    /// Path to config file
-    #[arg(short, long)]
-    config: Option<PathBuf>,
-
-    /// Increase log verbosity (-v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
-}
 
 fn pid_file_path() -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
@@ -56,12 +48,8 @@ fn remove_pid_file() {
     let _ = std::fs::remove_file(pid_file_path());
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    // Initialize tracing
-    let filter = match cli.verbose {
+fn init_tracing(verbose: u8) {
+    let filter = match verbose {
         0 => "whspr_rs=info",
         1 => "whspr_rs=debug",
         _ => "whspr_rs=trace",
@@ -73,7 +61,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .compact()
         .init();
+}
 
+async fn run_default(cli: &Cli) -> anyhow::Result<()> {
     // Check if an instance is already recording
     if let Some(pid) = read_running_pid() {
         tracing::info!("sending toggle signal to running instance (pid {pid})");
@@ -98,4 +88,31 @@ async fn main() -> anyhow::Result<()> {
     remove_pid_file();
 
     result.map_err(Into::into)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    init_tracing(cli.verbose);
+
+    match &cli.command {
+        None => run_default(&cli).await,
+        Some(Command::Setup) => {
+            setup::run_setup().await.map_err(Into::into)
+        }
+        Some(Command::Model { action }) => match action {
+            ModelAction::List => {
+                model::list_models();
+                Ok(())
+            }
+            ModelAction::Download { name } => {
+                model::download_model(name).await?;
+                Ok(())
+            }
+            ModelAction::Select { name } => {
+                model::select_model(name).map_err(Into::into)
+            }
+        },
+    }
 }
