@@ -63,7 +63,7 @@ impl Default for AudioConfig {
 impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
-            model_path: "~/.local/share/whspr-rs/ggml-base.en.bin".into(),
+            model_path: "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin".into(),
             language: "en".into(),
         }
     }
