@@ -1,8 +1,8 @@
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use evdev::uinput::VirtualDeviceBuilder;
 use evdev::{AttributeSet, EventType, InputEvent, Key};
-use wl_clipboard_rs::copy::{MimeType, Options, Source};
 
 use crate::error::{Result, WhsprError};
 
@@ -19,78 +19,64 @@ impl TextInjector {
             return Ok(());
         }
 
-        // Step 1: Copy text to Wayland clipboard
-        self.copy_to_clipboard(text)?;
+        // Set text-only clipboard via wl-copy (stdin pipe, plain text MIME only)
+        let mut wl_copy = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| WhsprError::Injection(format!("failed to spawn wl-copy: {e}")))?;
 
-        // Step 2: Small delay to let clipboard settle
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some(mut stdin) = wl_copy.stdin.take() {
+            use std::io::Write;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| WhsprError::Injection(format!("wl-copy stdin write: {e}")))?;
+        }
 
-        // Step 3: Simulate Ctrl+V paste via uinput
-        self.simulate_paste().await?;
+        let status = wl_copy
+            .wait()
+            .map_err(|e| WhsprError::Injection(format!("wl-copy wait: {e}")))?;
+        if !status.success() {
+            return Err(WhsprError::Injection(format!(
+                "wl-copy exited with {}",
+                status
+            )));
+        }
 
-        tracing::info!("text injected successfully ({} chars)", text.len());
-        Ok(())
-    }
+        // Wait for compositor to process the clipboard offer
+        tokio::time::sleep(Duration::from_millis(120)).await;
 
-    fn copy_to_clipboard(&self, text: &str) -> Result<()> {
-        let opts = Options::new();
-        opts.copy(
-            Source::Bytes(text.as_bytes().into()),
-            MimeType::Autodetect,
-        )
-        .map_err(|e| WhsprError::Injection(format!("failed to copy to clipboard: {e}")))?;
-
-        tracing::debug!("text copied to clipboard");
-        Ok(())
-    }
-
-    async fn simulate_paste(&self) -> Result<()> {
+        // Send Ctrl+Shift+V via uinput virtual keyboard
         let mut keys = AttributeSet::<Key>::new();
         keys.insert(Key::KEY_LEFTCTRL);
+        keys.insert(Key::KEY_LEFTSHIFT);
         keys.insert(Key::KEY_V);
 
         let mut device = VirtualDeviceBuilder::new()
-            .map_err(|e| WhsprError::Injection(format!("failed to create virtual device: {e}")))?
+            .map_err(|e| WhsprError::Injection(format!("uinput: {e}")))?
             .name("whspr-rs-keyboard")
             .with_keys(&keys)
-            .map_err(|e| WhsprError::Injection(format!("failed to set keys: {e}")))?
+            .map_err(|e| WhsprError::Injection(format!("uinput keys: {e}")))?
             .build()
-            .map_err(|e| WhsprError::Injection(format!("failed to build virtual device: {e}")))?;
+            .map_err(|e| WhsprError::Injection(format!("uinput build: {e}")))?;
 
-        // Small delay for uinput device to register
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait for compositor to recognize the virtual device
+        tokio::time::sleep(Duration::from_millis(60)).await;
 
-        // Press Ctrl
-        let ctrl_down = InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 1);
+        // Ctrl down, Shift down, V press+release, Shift up, Ctrl up
         device
-            .emit(&[ctrl_down])
-            .map_err(|e| WhsprError::Injection(format!("failed to press ctrl: {e}")))?;
+            .emit(&[
+                InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 1),
+                InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 1),
+                InputEvent::new(EventType::KEY, Key::KEY_V.code(), 1),
+                InputEvent::new(EventType::KEY, Key::KEY_V.code(), 0),
+                InputEvent::new(EventType::KEY, Key::KEY_LEFTSHIFT.code(), 0),
+                InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 0),
+            ])
+            .map_err(|e| WhsprError::Injection(format!("paste keystroke: {e}")))?;
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Press V
-        let v_down = InputEvent::new(EventType::KEY, Key::KEY_V.code(), 1);
-        device
-            .emit(&[v_down])
-            .map_err(|e| WhsprError::Injection(format!("failed to press v: {e}")))?;
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Release V
-        let v_up = InputEvent::new(EventType::KEY, Key::KEY_V.code(), 0);
-        device
-            .emit(&[v_up])
-            .map_err(|e| WhsprError::Injection(format!("failed to release v: {e}")))?;
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Release Ctrl
-        let ctrl_up = InputEvent::new(EventType::KEY, Key::KEY_LEFTCTRL.code(), 0);
-        device
-            .emit(&[ctrl_up])
-            .map_err(|e| WhsprError::Injection(format!("failed to release ctrl: {e}")))?;
-
-        tracing::debug!("paste keystroke simulated");
+        tracing::info!("injected {} chars via wl-copy + Ctrl+Shift+V", text.len());
         Ok(())
     }
 }

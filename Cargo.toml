@@ -14,9 +14,6 @@ cpal = "0.15"
 # Whisper transcription
 whisper-rs = "0.14"
 
-# Wayland clipboard
-wl-clipboard-rs = "0.9"
-
 # uinput virtual keyboard for paste keystroke
 evdev = { version = "0.12" }
 
