@@ -30,11 +30,11 @@ impl WhisperLocal {
         ctx_params.flash_attn(true);
         tracing::info!("GPU acceleration enabled (flash_attn=true)");
 
-        let ctx = WhisperContext::new_with_params(
-            model_path.to_str().unwrap_or_default(),
-            ctx_params,
-        )
-        .map_err(|e| WhsprError::Transcription(format!("failed to load whisper model: {e}")))?;
+        let ctx =
+            WhisperContext::new_with_params(model_path.to_str().unwrap_or_default(), ctx_params)
+                .map_err(|e| {
+                    WhsprError::Transcription(format!("failed to load whisper model: {e}"))
+                })?;
 
         tracing::info!("whisper model loaded successfully");
 
@@ -48,6 +48,11 @@ impl WhisperLocal {
 const CHUNK_DURATION_SECS: f64 = 30.0;
 const OVERLAP_SECS: f64 = 1.0;
 
+/// Minimum RMS energy to consider audio as containing speech (~-40 dBFS).
+const MIN_RMS_THRESHOLD: f32 = 0.01;
+/// Minimum duration in seconds for meaningful speech input.
+const MIN_DURATION_SECS: f64 = 0.3;
+
 impl TranscriptionBackend for WhisperLocal {
     fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String> {
         // Audio diagnostics
@@ -60,12 +65,22 @@ impl TranscriptionBackend for WhisperLocal {
             rms
         );
 
+        // Gate: skip silent or too-short audio to avoid Whisper hallucinations
+        if duration_secs < MIN_DURATION_SECS {
+            tracing::info!("audio too short ({:.2}s < {:.1}s), skipping", duration_secs, MIN_DURATION_SECS);
+            return Ok(String::new());
+        }
+        if rms < MIN_RMS_THRESHOLD {
+            tracing::info!("audio too quiet (RMS {:.4} < {}), skipping", rms, MIN_RMS_THRESHOLD);
+            return Ok(String::new());
+        }
+
         let chunk_size = (CHUNK_DURATION_SECS * sample_rate as f64) as usize;
         let overlap = (OVERLAP_SECS * sample_rate as f64) as usize;
 
         if audio.len() <= chunk_size {
             // Short audio: process directly
-            self.transcribe_chunk(&audio)
+            self.transcribe_chunk(audio)
         } else {
             // Long audio: split into overlapping chunks
             let mut results = Vec::new();
@@ -113,15 +128,15 @@ impl WhisperLocal {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
         let n_threads = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
             .unwrap_or(4);
         params.set_n_threads(n_threads);
 
-        let mut state = self
-            .ctx
-            .create_state()
-            .map_err(|e| WhsprError::Transcription(format!("failed to create whisper state: {e}")))?;
+        let mut state = self.ctx.create_state().map_err(|e| {
+            WhsprError::Transcription(format!("failed to create whisper state: {e}"))
+        })?;
 
         state
             .full(params, audio)

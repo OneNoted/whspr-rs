@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "whspr-rs", version, about = "Speech-to-text dictation tool for Wayland")]
+#[command(
+    name = "whspr-rs",
+    version,
+    about = "Speech-to-text dictation tool for Wayland"
+)]
 pub struct Cli {
     /// Path to config file
     #[arg(short, long, global = true)]

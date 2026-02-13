@@ -120,12 +120,11 @@ fn model_status(info: &ModelInfo, active_resolved: Option<&std::path::Path>) -> 
 }
 
 pub fn list_models() {
-    let active_resolved = active_model_path().map(|p| {
-        std::path::PathBuf::from(config::expand_tilde(&p))
-    });
+    let active_resolved =
+        active_model_path().map(|p| std::path::PathBuf::from(config::expand_tilde(&p)));
     println!(
-        "{:<22} {:>8}  {:<8}  {}",
-        "MODEL", "SIZE", "STATUS", "DESCRIPTION"
+        "{:<22} {:>8}  {:<8}  DESCRIPTION",
+        "MODEL", "SIZE", "STATUS"
     );
     println!("{}", "-".repeat(80));
     for m in MODELS {
@@ -161,9 +160,8 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
 
     // Ensure data directory exists
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            WhsprError::Download(format!("failed to create data directory: {e}"))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| WhsprError::Download(format!("failed to create data directory: {e}")))?;
     }
 
     let url = format!(
@@ -177,9 +175,7 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
 
     // Check for partial download to support resume
     let existing_len = if part_path.exists() {
-        std::fs::metadata(&part_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
+        std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0)
     } else {
         0
     };
@@ -190,9 +186,10 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
         request = request.header("Range", format!("bytes={}-", existing_len));
     }
 
-    let response = request.send().await.map_err(|e| {
-        WhsprError::Download(format!("failed to start download: {e}"))
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| WhsprError::Download(format!("failed to start download: {e}")))?;
 
     if !response.status().is_success() && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
     {
@@ -246,18 +243,16 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     pb.finish_with_message("done");
 
     // Atomic rename
-    std::fs::rename(&part_path, &dest).map_err(|e| {
-        WhsprError::Download(format!("failed to finalize download: {e}"))
-    })?;
+    std::fs::rename(&part_path, &dest)
+        .map_err(|e| WhsprError::Download(format!("failed to finalize download: {e}")))?;
 
     println!("Saved to {}", dest.display());
     Ok(dest)
 }
 
 pub fn select_model(name: &str) -> Result<()> {
-    let info = find_model(name).ok_or_else(|| {
-        WhsprError::Download(format!("unknown model '{name}'"))
-    })?;
+    let info =
+        find_model(name).ok_or_else(|| WhsprError::Download(format!("unknown model '{name}'")))?;
 
     let dest = model_path(info.filename);
     if !dest.exists() {

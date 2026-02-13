@@ -74,15 +74,20 @@ impl Config {
         };
 
         if !config_path.exists() {
-            tracing::info!("no config file found at {}, using defaults", config_path.display());
+            tracing::info!(
+                "no config file found at {}, using defaults",
+                config_path.display()
+            );
             return Ok(Config::default());
         }
 
-        let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| WhsprError::Config(format!("failed to read {}: {e}", config_path.display())))?;
+        let contents = std::fs::read_to_string(&config_path).map_err(|e| {
+            WhsprError::Config(format!("failed to read {}: {e}", config_path.display()))
+        })?;
 
-        let config: Config = toml::from_str(&contents)
-            .map_err(|e| WhsprError::Config(format!("failed to parse {}: {e}", config_path.display())))?;
+        let config: Config = toml::from_str(&contents).map_err(|e| {
+            WhsprError::Config(format!("failed to parse {}: {e}", config_path.display()))
+        })?;
 
         Ok(config)
     }

@@ -18,8 +18,7 @@ use crate::cli::{Cli, Command, ModelAction};
 use crate::config::Config;
 
 fn pid_file_path() -> PathBuf {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/tmp".into());
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(runtime_dir).join("whspr-rs.pid")
 }
 
@@ -105,9 +104,7 @@ async fn main() -> crate::error::Result<()> {
 
     match &cli.command {
         None => run_default(&cli).await,
-        Some(Command::Setup) => {
-            setup::run_setup().await
-        }
+        Some(Command::Setup) => setup::run_setup().await,
         Some(Command::Model { action }) => match action {
             ModelAction::List => {
                 model::list_models();
@@ -117,9 +114,7 @@ async fn main() -> crate::error::Result<()> {
                 model::download_model(name).await?;
                 Ok(())
             }
-            ModelAction::Select { name } => {
-                model::select_model(name)
-            }
+            ModelAction::Select { name } => model::select_model(name),
         },
     }
 }

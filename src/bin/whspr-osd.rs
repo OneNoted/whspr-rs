@@ -1,18 +1,16 @@
 use std::os::fd::AsRawFd;
 use std::os::unix::io::{AsFd, FromRawFd};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::{
-    zwlr_layer_shell_v1, zwlr_layer_surface_v1,
-};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 // --- Layout ---
 const NUM_BARS: usize = 28;
@@ -132,8 +130,14 @@ fn pid_file_path() -> PathBuf {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
-        libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, handle_signal as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            handle_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            handle_signal as *const () as libc::sighandler_t,
+        );
     }
 
     let _ = std::fs::write(pid_file_path(), std::process::id().to_string());
@@ -182,9 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
     layer_surface.set_margin(0, 0, MARGIN_BOTTOM, 0);
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_keyboard_interactivity(
-        zwlr_layer_surface_v1::KeyboardInteractivity::None,
-    );
+    layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     surface.commit();
 
     state.surface = Some(surface);
@@ -303,16 +305,33 @@ fn start_audio_capture(level: Arc<AudioLevel>) -> Option<cpal::Stream> {
 
 // --- Rendering ---
 
-fn render_frame(
-    pixels: &mut [u8],
-    w: u32,
-    h: u32,
-    bars: &BarState,
-    _time: f32,
-) {
+fn render_frame(pixels: &mut [u8], w: u32, h: u32, bars: &BarState, _time: f32) {
     // Glassmorphic background
-    draw_rounded_rect(pixels, w, h, 0, 0, w, h, CORNER_RADIUS, BG_R, BG_G, BG_B, BG_A);
-    draw_rounded_border(pixels, w, h, CORNER_RADIUS, BORDER_WIDTH, BORDER_R, BORDER_G, BORDER_B, BORDER_A);
+    draw_rounded_rect(
+        pixels,
+        w,
+        h,
+        0,
+        0,
+        w,
+        h,
+        CORNER_RADIUS,
+        BG_R,
+        BG_G,
+        BG_B,
+        BG_A,
+    );
+    draw_rounded_border(
+        pixels,
+        w,
+        h,
+        CORNER_RADIUS,
+        BORDER_WIDTH,
+        BORDER_R,
+        BORDER_G,
+        BORDER_B,
+        BORDER_A,
+    );
 
     // Top highlight (glass reflection)
     for x in (CORNER_RADIUS + 2)..(w.saturating_sub(CORNER_RADIUS + 2)) {
@@ -396,6 +415,7 @@ fn present_frame(
 
 // --- Drawing primitives ---
 
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn set_pixel_blend(pixels: &mut [u8], w: u32, h: u32, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) {
     if x >= w || y >= h || a == 0 {
@@ -419,10 +439,20 @@ fn set_pixel_blend(pixels: &mut [u8], w: u32, h: u32, x: u32, y: u32, r: u8, g: 
     pixels[idx + 3] = ((sa * 255 + inv * pixels[idx + 3] as u32) / 255) as u8;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rounded_rect(
-    pixels: &mut [u8], pw: u32, ph: u32,
-    x0: u32, y0: u32, w: u32, h: u32,
-    radius: u32, r: u8, g: u8, b: u8, a: u8,
+    pixels: &mut [u8],
+    pw: u32,
+    ph: u32,
+    x0: u32,
+    y0: u32,
+    w: u32,
+    h: u32,
+    radius: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
 ) {
     for y in y0..y0 + h {
         for x in x0..x0 + w {
@@ -435,9 +465,17 @@ fn draw_rounded_rect(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_rounded_border(
-    pixels: &mut [u8], w: u32, h: u32,
-    radius: u32, thickness: u32, r: u8, g: u8, b: u8, a: u8,
+    pixels: &mut [u8],
+    w: u32,
+    h: u32,
+    radius: u32,
+    thickness: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
 ) {
     for y in 0..h {
         for x in 0..w {
@@ -509,21 +547,27 @@ impl Dispatch<wl_registry::WlRegistry, ()> for OsdState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global { name, interface, .. } = event {
+        if let wl_registry::Event::Global {
+            name, interface, ..
+        } = event
+        {
             match &interface[..] {
                 "wl_compositor" => {
                     state.compositor =
                         Some(registry.bind::<wl_compositor::WlCompositor, _, _>(name, 6, qh, ()));
                 }
                 "wl_shm" => {
-                    state.shm =
-                        Some(registry.bind::<wl_shm::WlShm, _, _>(name, 1, qh, ()));
+                    state.shm = Some(registry.bind::<wl_shm::WlShm, _, _>(name, 1, qh, ()));
                 }
                 "zwlr_layer_shell_v1" => {
-                    state.layer_shell =
-                        Some(registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
-                            name, 1, qh, (),
-                        ));
+                    state.layer_shell = Some(
+                        registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
+                            name,
+                            1,
+                            qh,
+                            (),
+                        ),
+                    );
                 }
                 _ => {}
             }
@@ -541,7 +585,11 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for OsdState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, width, height } => {
+            zwlr_layer_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => {
                 layer_surface.ack_configure(serial);
                 if width > 0 {
                     state.width = width;
