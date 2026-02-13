@@ -25,7 +25,7 @@ pub async fn run_setup() -> Result<()> {
     println!();
 
     // Download the model
-    let dest = model::download_model(chosen.name).await?;
+    model::download_model(chosen.name).await?;
     println!();
 
     // Generate or update config
@@ -46,6 +46,5 @@ pub async fn run_setup() -> Result<()> {
     println!("Bind it to a key in your compositor, e.g. for Hyprland:");
     println!("  bind = SUPER ALT, D, exec, whspr-rs");
 
-    let _ = dest;
     Ok(())
 }

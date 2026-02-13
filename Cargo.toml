@@ -6,7 +6,7 @@ description = "Speech-to-text dictation tool for Wayland"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "io-util"] }
 
 # Audio capture
 cpal = "0.15"
@@ -33,13 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 thiserror = "2"
-anyhow = "1"
 
-# Async trait
-async-trait = "0.1"
-
-# Shell expansion for paths
-shellexpand = "3"
 
 # Signal sending for PID-based toggle
 libc = "0.2"

@@ -63,14 +63,21 @@ fn init_tracing(verbose: u8) {
         .init();
 }
 
-async fn run_default(cli: &Cli) -> anyhow::Result<()> {
+async fn run_default(cli: &Cli) -> crate::error::Result<()> {
     // Check if an instance is already recording
     if let Some(pid) = read_running_pid() {
         tracing::info!("sending toggle signal to running instance (pid {pid})");
-        unsafe {
-            libc::kill(pid as i32, libc::SIGUSR1);
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
+        if ret != 0 {
+            tracing::warn!(
+                "failed to signal pid {pid}: {}",
+                std::io::Error::last_os_error()
+            );
+            let _ = std::fs::remove_file(pid_file_path());
+            // fall through to start new instance
+        } else {
+            return Ok(());
         }
-        return Ok(());
     }
 
     tracing::info!("whspr-rs v{}", env!("CARGO_PKG_VERSION"));
@@ -87,11 +94,11 @@ async fn run_default(cli: &Cli) -> anyhow::Result<()> {
 
     remove_pid_file();
 
-    result.map_err(Into::into)
+    result
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> crate::error::Result<()> {
     let cli = Cli::parse();
 
     init_tracing(cli.verbose);
@@ -99,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     match &cli.command {
         None => run_default(&cli).await,
         Some(Command::Setup) => {
-            setup::run_setup().await.map_err(Into::into)
+            setup::run_setup().await
         }
         Some(Command::Model { action }) => match action {
             ModelAction::List => {
@@ -111,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(())
             }
             ModelAction::Select { name } => {
-                model::select_model(name).map_err(Into::into)
+                model::select_model(name)
             }
         },
     }

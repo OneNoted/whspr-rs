@@ -107,11 +107,9 @@ fn active_model_path() -> Option<String> {
     Some(config.whisper.model_path)
 }
 
-fn model_status(info: &ModelInfo) -> &'static str {
+fn model_status(info: &ModelInfo, active_resolved: Option<&std::path::Path>) -> &'static str {
     let path = model_path(info.filename);
-    let active = active_model_path();
-    let expected = format!("~/.local/share/whspr-rs/{}", info.filename);
-    let is_active = active.as_deref() == Some(&expected);
+    let is_active = active_resolved == Some(path.as_path());
     let is_local = path.exists();
 
     match (is_active, is_local) {
@@ -122,13 +120,16 @@ fn model_status(info: &ModelInfo) -> &'static str {
 }
 
 pub fn list_models() {
+    let active_resolved = active_model_path().map(|p| {
+        std::path::PathBuf::from(config::expand_tilde(&p))
+    });
     println!(
         "{:<22} {:>8}  {:<8}  {}",
         "MODEL", "SIZE", "STATUS", "DESCRIPTION"
     );
     println!("{}", "-".repeat(80));
     for m in MODELS {
-        let status = model_status(m);
+        let status = model_status(m, active_resolved.as_deref());
         let marker = match status {
             "active" => "* ",
             _ => "  ",

@@ -65,7 +65,9 @@ pub async fn run(config: Config) -> Result<()> {
         .await
         .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
 
-    let text = backend.transcribe(&audio, sample_rate).await?;
+    let text = tokio::task::spawn_blocking(move || backend.transcribe(&audio, sample_rate))
+        .await
+        .map_err(|e| WhsprError::Transcription(format!("task panicked: {e}")))??;
 
     if text.is_empty() {
         tracing::warn!("transcription returned empty text");

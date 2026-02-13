@@ -37,7 +37,7 @@ impl FeedbackPlayer {
             return;
         }
         let path = self.start_sound_path.clone();
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             if let Err(e) = play_sound(path.as_deref(), START_SOUND) {
                 tracing::warn!("failed to play start sound: {e}");
             }
@@ -49,7 +49,7 @@ impl FeedbackPlayer {
             return;
         }
         let path = self.stop_sound_path.clone();
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             if let Err(e) = play_sound(path.as_deref(), STOP_SOUND) {
                 tracing::warn!("failed to play stop sound: {e}");
             }

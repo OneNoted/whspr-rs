@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, WhsprError};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub audio: AudioConfig,
@@ -26,11 +26,9 @@ pub struct WhisperConfig {
     pub language: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct InjectConfig {
-    pub method: String,
-}
+pub struct InjectConfig {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -38,17 +36,6 @@ pub struct FeedbackConfig {
     pub enabled: bool,
     pub start_sound: String,
     pub stop_sound: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            audio: AudioConfig::default(),
-            whisper: WhisperConfig::default(),
-            inject: InjectConfig::default(),
-            feedback: FeedbackConfig::default(),
-        }
-    }
 }
 
 impl Default for AudioConfig {
@@ -65,14 +52,6 @@ impl Default for WhisperConfig {
         Self {
             model_path: "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin".into(),
             language: "auto".into(),
-        }
-    }
-}
-
-impl Default for InjectConfig {
-    fn default() -> Self {
-        Self {
-            method: "clipboard".into(),
         }
     }
 }
@@ -109,8 +88,7 @@ impl Config {
     }
 
     pub fn resolved_model_path(&self) -> PathBuf {
-        let expanded = shellexpand::tilde(&self.whisper.model_path);
-        PathBuf::from(expanded.as_ref())
+        PathBuf::from(expand_tilde(&self.whisper.model_path))
     }
 }
 
@@ -146,6 +124,23 @@ fn xdg_dir(kind: &str) -> PathBuf {
     }
 }
 
+pub fn expand_tilde(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => {
+            if let Ok(home) = std::env::var("HOME") {
+                return format!("{home}/{rest}");
+            }
+        }
+        None if path == "~" => {
+            if let Ok(home) = std::env::var("HOME") {
+                return home;
+            }
+        }
+        _ => {}
+    }
+    path.to_string()
+}
+
 pub fn write_default_config(path: &Path, model_path: &str) -> Result<()> {
     let contents = format!(
         r#"# whspr-rs configuration
@@ -167,10 +162,6 @@ sample_rate = 16000
 model_path = "{model_path}"
 # Language code ("en", "fr", "de", etc.) or "auto" for auto-detect
 language = "auto"
-
-[inject]
-# Text injection method
-method = "clipboard"
 
 [feedback]
 # Play sound feedback on start/stop

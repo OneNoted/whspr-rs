@@ -130,7 +130,7 @@ fn pid_file_path() -> PathBuf {
     PathBuf::from(runtime_dir).join("whspr-osd.pid")
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGINT, handle_signal as *const () as libc::sighandler_t);
@@ -143,7 +143,7 @@ fn main() {
     let _audio_stream = start_audio_capture(Arc::clone(&audio_level));
 
     // Wayland setup
-    let conn = Connection::connect_to_env().expect("failed to connect to wayland");
+    let conn = Connection::connect_to_env()?;
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
 
@@ -162,7 +162,7 @@ fn main() {
         configured: false,
     };
 
-    event_queue.roundtrip(&mut state).unwrap();
+    event_queue.roundtrip(&mut state)?;
 
     // Create layer surface
     let compositor = state.compositor.as_ref().expect("no wl_compositor");
@@ -190,17 +190,32 @@ fn main() {
     state.surface = Some(surface);
     state.layer_surface = Some(layer_surface);
 
-    event_queue.roundtrip(&mut state).unwrap();
+    event_queue.roundtrip(&mut state)?;
 
     // Animation state
     let mut bars = BarState::new();
     let start_time = Instant::now();
 
+    // Reusable pixel buffer (avoids alloc/dealloc per frame)
+    let mut pixels = vec![0u8; (OSD_WIDTH * OSD_HEIGHT * 4) as usize];
+
+    // Persistent shm pool: create memfd + pool once, reuse each frame
+    let stride = OSD_WIDTH * 4;
+    let shm_size = (stride * OSD_HEIGHT) as i32;
+    let shm_fd = unsafe { libc::memfd_create(c"whspr-osd".as_ptr(), libc::MFD_CLOEXEC) };
+    if shm_fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let shm_file = unsafe { std::fs::File::from_raw_fd(shm_fd) };
+    shm_file.set_len(shm_size as u64)?;
+    let shm = state.shm.as_ref().expect("no wl_shm");
+    let pool = shm.create_pool(shm_file.as_fd(), shm_size, &qh, ());
+
     // Main animation loop
     while state.running && !SHOULD_EXIT.load(Ordering::Relaxed) {
-        conn.flush().unwrap();
+        conn.flush()?;
 
-        let read_guard = event_queue.prepare_read().unwrap();
+        let read_guard = event_queue.prepare_read().expect("single-threaded");
         let mut pollfd = libc::pollfd {
             fd: read_guard.connection_fd().as_raw_fd(),
             events: libc::POLLIN,
@@ -213,7 +228,7 @@ fn main() {
         } else {
             drop(read_guard);
         }
-        event_queue.dispatch_pending(&mut state).unwrap();
+        event_queue.dispatch_pending(&mut state)?;
 
         if !state.configured {
             continue;
@@ -224,15 +239,20 @@ fn main() {
         let rms = audio_level.get();
         bars.update(rms, time);
 
-        // Render and present frame
+        // Render frame into reusable buffer
         let w = state.width;
         let h = state.height;
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        pixels.fill(0);
         render_frame(&mut pixels, w, h, &bars, time);
-        present_frame(&mut state, &qh, &pixels, w, h);
+
+        // Present frame using persistent shm pool
+        if let Err(e) = present_frame(&mut state, &qh, &pool, &shm_file, &pixels, w, h) {
+            eprintln!("frame dropped: {e}");
+        }
     }
 
     // Cleanup
+    pool.destroy();
     if let Some(ls) = state.layer_surface.take() {
         ls.destroy();
     }
@@ -243,6 +263,7 @@ fn main() {
         b.destroy();
     }
     let _ = std::fs::remove_file(pid_file_path());
+    Ok(())
 }
 
 extern "C" fn handle_signal(_sig: libc::c_int) {
@@ -336,28 +357,24 @@ fn render_frame(
 fn present_frame(
     state: &mut OsdState,
     qh: &QueueHandle<OsdState>,
+    pool: &wl_shm_pool::WlShmPool,
+    shm_file: &std::fs::File,
     pixels: &[u8],
     w: u32,
     h: u32,
-) {
-    let shm = state.shm.as_ref().unwrap();
+) -> std::io::Result<()> {
     let stride = w * 4;
-    let size = (stride * h) as i32;
 
-    let fd = unsafe { libc::memfd_create(c"whspr-osd".as_ptr(), libc::MFD_CLOEXEC) };
-    assert!(fd >= 0, "memfd_create failed");
-    let file = unsafe { std::fs::File::from_raw_fd(fd) };
-    file.set_len(size as u64).unwrap();
-
-    use std::io::Write;
-    (&file).write_all(pixels).unwrap();
+    use std::io::{Seek, Write};
+    let mut writer = shm_file;
+    writer.seek(std::io::SeekFrom::Start(0))?;
+    writer.write_all(pixels)?;
 
     // Destroy previous buffer
     if let Some(old) = state.buffer.take() {
         old.destroy();
     }
 
-    let pool = shm.create_pool(file.as_fd(), size, qh, ());
     let buffer = pool.create_buffer(
         0,
         w as i32,
@@ -367,7 +384,6 @@ fn present_frame(
         qh,
         (),
     );
-    pool.destroy();
 
     let surface = state.surface.as_ref().unwrap();
     surface.attach(Some(&buffer), 0, 0);
@@ -375,6 +391,7 @@ fn present_frame(
     surface.commit();
 
     state.buffer = Some(buffer);
+    Ok(())
 }
 
 // --- Drawing primitives ---

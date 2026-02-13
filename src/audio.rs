@@ -77,7 +77,7 @@ impl AudioRecorder {
         }
 
         let buffer = Arc::clone(&self.buffer);
-        buffer.lock().unwrap().clear();
+        buffer.lock().expect("audio buffer lock").clear();
 
         let err_fn = |err: cpal::StreamError| {
             tracing::error!("audio stream error: {err}");
@@ -109,7 +109,12 @@ impl AudioRecorder {
         // Drop the stream to stop recording
         self.stream.take();
 
-        let buffer = std::mem::take(&mut *self.buffer.lock().unwrap());
+        let buffer = std::mem::take(
+            &mut *self
+                .buffer
+                .lock()
+                .map_err(|_| WhsprError::Audio("audio buffer lock poisoned".into()))?,
+        );
         tracing::info!("audio recording stopped, captured {} samples", buffer.len());
 
         if buffer.is_empty() {

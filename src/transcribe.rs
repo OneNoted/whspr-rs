@@ -1,14 +1,12 @@
 use std::path::Path;
 
-use async_trait::async_trait;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::config::WhisperConfig;
 use crate::error::{Result, WhsprError};
 
-#[async_trait]
 pub trait TranscriptionBackend: Send + Sync {
-    async fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String>;
+    fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String>;
 }
 
 pub struct WhisperLocal {
@@ -50,9 +48,8 @@ impl WhisperLocal {
 const CHUNK_DURATION_SECS: f64 = 30.0;
 const OVERLAP_SECS: f64 = 1.0;
 
-#[async_trait]
 impl TranscriptionBackend for WhisperLocal {
-    async fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String> {
+    fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String> {
         // Audio diagnostics
         let duration_secs = audio.len() as f64 / sample_rate as f64;
         let rms = (audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32).sqrt();
