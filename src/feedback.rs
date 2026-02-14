@@ -23,13 +23,15 @@ enum SoundCommand {
 /// The output stream is opened once on a dedicated thread and kept alive for the
 /// lifetime of this struct. This avoids the PulseAudio/PipeWire pop that occurs
 /// when a client repeatedly connects and disconnects.
+///
+/// On drop, the channel is closed and the background thread is joined so the
+/// `OutputStream` is torn down gracefully before the process exits.
 pub struct FeedbackPlayer {
     enabled: bool,
     start_sound_path: Option<String>,
     stop_sound_path: Option<String>,
-    sender: mpsc::Sender<SoundCommand>,
-    // Keep the thread handle so it lives as long as the player.
-    _thread: std::thread::JoinHandle<()>,
+    sender: Option<mpsc::Sender<SoundCommand>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl FeedbackPlayer {
@@ -73,27 +75,41 @@ impl FeedbackPlayer {
                     }
                 }
             }
+
+            // Leak the OutputStream — cpal's ALSA backend calls snd_pcm_close()
+            // on drop without draining first, which causes an audible click on
+            // PipeWire.  The OS reclaims file descriptors on process exit.
+            std::mem::forget(stream);
         });
 
         Self {
             enabled,
             start_sound_path,
             stop_sound_path,
-            sender,
-            _thread: thread,
+            sender: Some(sender),
+            thread: Some(thread),
         }
     }
 
-    /// Fire-and-forget: plays the start sound without blocking.
+    /// Blocks until the start sound has finished playing.
+    ///
+    /// This ensures the sound completes before the mic goes live, preventing
+    /// the start chime from leaking into the recording.
     pub fn play_start(&self) {
         if !self.enabled {
             return;
         }
-        let _ = self.sender.send(SoundCommand::Play {
+        let sender = match self.sender.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        let _ = sender.send(SoundCommand::Play {
             custom_path: self.start_sound_path.clone(),
             bundled: START_SOUND,
-            done: None,
+            done: Some(tx),
         });
+        let _ = rx.recv();
     }
 
     /// Blocks until the stop sound has finished playing.
@@ -104,13 +120,28 @@ impl FeedbackPlayer {
         if !self.enabled {
             return;
         }
+        let sender = match self.sender.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
         let (tx, rx) = mpsc::sync_channel(1);
-        let _ = self.sender.send(SoundCommand::Play {
+        let _ = sender.send(SoundCommand::Play {
             custom_path: self.stop_sound_path.clone(),
             bundled: STOP_SOUND,
             done: Some(tx),
         });
         let _ = rx.recv();
+    }
+}
+
+impl Drop for FeedbackPlayer {
+    fn drop(&mut self) {
+        // Close the channel so the background thread's recv loop exits.
+        self.sender.take();
+        // Join the thread to ensure orderly shutdown before the process exits.
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
