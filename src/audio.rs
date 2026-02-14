@@ -106,10 +106,16 @@ impl AudioRecorder {
     }
 
     pub fn stop(&mut self) -> Result<Vec<f32>> {
-        // Drop the stream to stop recording
-        self.stream.take();
+        // Take and leak the stream — cpal's ALSA backend calls snd_pcm_close()
+        // on drop without draining first, which causes an audible click on
+        // PipeWire when the stream is still "warm".  The OS reclaims file
+        // descriptors on process exit.
+        if let Some(stream) = self.stream.take() {
+            let _ = stream.pause();
+            std::mem::forget(stream);
+        }
 
-        let buffer = std::mem::take(
+        let mut buffer = std::mem::take(
             &mut *self
                 .buffer
                 .lock()
@@ -119,6 +125,15 @@ impl AudioRecorder {
 
         if buffer.is_empty() {
             return Err(WhsprError::Audio("no audio data captured".into()));
+        }
+
+        // Fade out the last few ms to remove any trailing click artifact.
+        let fade_samples = (self.config.sample_rate as usize * 5) / 1000; // 5ms
+        let fade_len = fade_samples.min(buffer.len());
+        let start = buffer.len() - fade_len;
+        for i in 0..fade_len {
+            let gain = 1.0 - (i as f32 / fade_len as f32);
+            buffer[start + i] *= gain;
         }
 
         Ok(buffer)

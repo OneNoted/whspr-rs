@@ -14,10 +14,11 @@ pub async fn run(config: Config) -> Result<()> {
         &config.feedback.stop_sound,
     );
 
-    // Start recording immediately
+    // Play start sound first (blocking), then start recording so the sound
+    // doesn't leak into the mic.
+    feedback.play_start();
     let mut recorder = AudioRecorder::new(&config.audio);
     recorder.start()?;
-    feedback.play_start();
     let mut osd = spawn_osd();
     tracing::info!("recording... (run whspr-rs again to stop)");
 
@@ -51,10 +52,11 @@ pub async fn run(config: Config) -> Result<()> {
         }
     }
 
-    // Stop recording
+    // Stop recording before playing feedback so the stop sound doesn't
+    // leak into the mic.
     kill_osd(&mut osd);
-    feedback.play_stop();
     let audio = recorder.stop()?;
+    feedback.play_stop();
     let sample_rate = config.audio.sample_rate;
 
     tracing::info!("transcribing {} samples...", audio.len());
@@ -70,6 +72,12 @@ pub async fn run(config: Config) -> Result<()> {
 
     if text.is_empty() {
         tracing::warn!("transcription returned empty text");
+        // When the RMS/duration gates skip transcription, the process would
+        // exit almost immediately after play_stop().  PipeWire may still be
+        // draining the stop sound's last buffer; exiting while it's "warm"
+        // causes an audible click as the OS closes our audio file descriptors.
+        // With speech, transcription takes seconds — providing natural drain time.
+        std::thread::sleep(std::time::Duration::from_millis(150));
         return Ok(());
     }
 
