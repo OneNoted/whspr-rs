@@ -26,6 +26,16 @@ pub enum Command {
     /// Interactive first-time setup wizard
     Setup,
 
+    /// Transcribe an audio file (wav, mp3, flac, ogg, mp4/m4a)
+    Transcribe {
+        /// Path to the audio file
+        file: PathBuf,
+
+        /// Write output to a file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
     /// Manage whisper models
     Model {
         #[command(subcommand)]

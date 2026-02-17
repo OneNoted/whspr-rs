@@ -4,18 +4,20 @@ mod cli;
 mod config;
 mod error;
 mod feedback;
+mod file_audio;
 mod inject;
 mod model;
 mod setup;
 mod transcribe;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command, ModelAction};
 use crate::config::Config;
+use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
 fn pid_file_path() -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
@@ -62,6 +64,37 @@ fn init_tracing(verbose: u8) {
         .init();
 }
 
+async fn transcribe_file(
+    cli: &Cli,
+    file: &Path,
+    output: Option<&Path>,
+) -> crate::error::Result<()> {
+    let config = Config::load(cli.config.as_deref())?;
+    let model_path = config.resolved_model_path();
+
+    tracing::info!("decoding audio file: {}", file.display());
+    let samples = file_audio::decode_audio_file(file)?;
+
+    let backend = tokio::task::spawn_blocking(move || {
+        WhisperLocal::new(&config.whisper, &model_path)
+    })
+    .await
+    .unwrap()?;
+
+    let text = tokio::task::spawn_blocking(move || backend.transcribe(&samples, 16000))
+        .await
+        .unwrap()?;
+
+    if let Some(out_path) = output {
+        tokio::fs::write(out_path, &text).await?;
+        tracing::info!("transcription written to {}", out_path.display());
+    } else {
+        println!("{text}");
+    }
+
+    Ok(())
+}
+
 async fn run_default(cli: &Cli) -> crate::error::Result<()> {
     // Check if an instance is already recording
     if let Some(pid) = read_running_pid() {
@@ -105,6 +138,9 @@ async fn main() -> crate::error::Result<()> {
     match &cli.command {
         None => run_default(&cli).await,
         Some(Command::Setup) => setup::run_setup().await,
+        Some(Command::Transcribe { file, output }) => {
+            transcribe_file(&cli, file, output.as_deref()).await
+        }
         Some(Command::Model { action }) => match action {
             ModelAction::List => {
                 model::list_models();
