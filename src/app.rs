@@ -8,6 +8,10 @@ use crate::inject::TextInjector;
 use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
 pub async fn run(config: Config) -> Result<()> {
+    // Register signals before startup work to minimize early-signal races.
+    let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     let feedback = FeedbackPlayer::new(
         config.feedback.enabled,
         &config.feedback.start_sound,
@@ -27,12 +31,6 @@ pub async fn run(config: Config) -> Result<()> {
     let model_path = config.resolved_model_path();
     let model_handle =
         tokio::task::spawn_blocking(move || WhisperLocal::new(&whisper_config, &model_path));
-
-    // Wait for SIGUSR1 (second invocation) or SIGINT/SIGTERM
-    let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
-        .expect("failed to register SIGUSR1 handler");
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to register SIGTERM handler");
 
     tokio::select! {
         _ = sigusr1.recv() => {
