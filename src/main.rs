@@ -36,16 +36,16 @@ fn pid_file_path() -> PathBuf {
     PathBuf::from(runtime_dir).join("whspr-rs.pid")
 }
 
-fn read_pid_from_lock(path: &Path) -> Option<u32> {
+fn read_pid_from_lock(path: &Path) -> Option<libc::pid_t> {
     let contents = std::fs::read_to_string(path).ok()?;
     contents.trim().parse().ok()
 }
 
-fn process_exists(pid: u32) -> bool {
+fn process_exists(pid: libc::pid_t) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-fn pid_belongs_to_whspr(pid: u32) -> bool {
+fn pid_belongs_to_whspr(pid: libc::pid_t) -> bool {
     if !process_exists(pid) {
         return false;
     }
@@ -114,7 +114,7 @@ fn signal_existing_instance(path: &Path) -> crate::error::Result<bool> {
     }
 
     tracing::info!("sending toggle signal to running instance (pid {pid})");
-    let ret = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
+    let ret = unsafe { libc::kill(pid, libc::SIGUSR1) };
     if ret == 0 {
         return Ok(true);
     }

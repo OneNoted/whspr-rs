@@ -110,9 +110,9 @@ fn spawn_osd() -> Option<Child> {
 
 fn kill_osd(child: &mut Option<Child>) {
     if let Some(mut c) = child.take() {
-        let pid = c.id();
+        let pid = c.id() as libc::pid_t;
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(pid, libc::SIGTERM);
         }
         let _ = c.wait();
         tracing::debug!("whspr-osd (pid {pid}) terminated");
