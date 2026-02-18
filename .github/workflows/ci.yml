@@ -63,5 +63,5 @@ jobs:
           if command -v nvcc >/dev/null 2>&1; then
             cargo check --no-default-features --features cuda
           else
-            echo "CUDA toolkit not available on runner; skipping cuda check"
+            echo "::warning::CUDA toolkit not available on this runner - skipping cuda feature check"
           fi
