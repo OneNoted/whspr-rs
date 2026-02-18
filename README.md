@@ -21,6 +21,7 @@ The two invocations communicate via PID file + `SIGUSR1` — no daemon, no IPC s
 - `wl-copy` (from `wl-clipboard`)
 - `uinput` access (for virtual keyboard paste)
 - NVIDIA GPU + CUDA toolkit (optional, for GPU acceleration)
+- If no compatible GPU is available, set `whisper.use_gpu = false` in config
 
 ## Install
 
@@ -79,6 +80,8 @@ sample_rate = 16000
 [whisper]
 model_path = "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin"
 language = "auto"      # or "en", "fr", "de", etc.
+use_gpu = true         # set false to force CPU
+flash_attn = true      # only used when use_gpu=true
 
 [feedback]
 enabled = true

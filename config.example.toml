@@ -20,6 +20,10 @@ sample_rate = 16000
 model_path = "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin"
 # Language code ("en", "fr", "de", etc.)
 language = "auto"
+# Enable GPU acceleration (set false to force CPU)
+use_gpu = true
+# Enable flash attention when GPU is enabled
+flash_attn = true
 
 [feedback]
 # Play sound feedback on start/stop
