@@ -34,7 +34,14 @@ impl WhisperLocal {
             config.use_gpu && config.flash_attn
         );
 
-        let ctx = WhisperContext::new_with_params(model_path.to_str().unwrap_or_default(), ctx_params)
+        let model_path_str = model_path.to_str().ok_or_else(|| {
+            WhsprError::Transcription(format!(
+                "model path contains invalid UTF-8: {}",
+                model_path.display()
+            ))
+        })?;
+
+        let ctx = WhisperContext::new_with_params(model_path_str, ctx_params)
             .map_err(|e| {
                 if config.use_gpu {
                     WhsprError::Transcription(format!(
@@ -64,6 +71,11 @@ const MIN_DURATION_SECS: f64 = 0.3;
 
 impl TranscriptionBackend for WhisperLocal {
     fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String> {
+        if audio.is_empty() || sample_rate == 0 {
+            tracing::info!("empty audio or zero sample rate, skipping");
+            return Ok(String::new());
+        }
+
         // Audio diagnostics
         let duration_secs = audio.len() as f64 / sample_rate as f64;
         let rms = (audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32).sqrt();
@@ -156,8 +168,14 @@ impl WhisperLocal {
         let mut text = String::new();
         for i in 0..num_segments {
             if let Some(segment) = state.get_segment(i) {
-                if let Ok(s) = segment.to_str() {
-                    text.push_str(s);
+                match segment.to_str() {
+                    Ok(s) => text.push_str(s),
+                    Err(_) => {
+                        if let Ok(lossy) = segment.to_str_lossy() {
+                            tracing::warn!("segment {i} contains invalid UTF-8, using lossy conversion");
+                            text.push_str(&lossy);
+                        }
+                    }
                 }
             }
         }
