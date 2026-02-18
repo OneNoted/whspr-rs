@@ -97,15 +97,19 @@ fn model_path(filename: &str) -> PathBuf {
     data_dir().join(filename)
 }
 
-pub fn model_path_for_config(filename: &str) -> String {
-    let path = model_path(filename);
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = PathBuf::from(home);
-        if let Ok(stripped) = path.strip_prefix(&home_path) {
+fn path_for_config(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    if let Some(home_path) = home {
+        if let Ok(stripped) = path.strip_prefix(home_path) {
             return format!("~/{}", stripped.display());
         }
     }
     path.display().to_string()
+}
+
+pub fn model_path_for_config(filename: &str) -> String {
+    let path = model_path(filename);
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    path_for_config(&path, home.as_deref())
 }
 
 fn active_model_path() -> Option<String> {
@@ -148,6 +152,26 @@ pub fn list_models() {
             "{}{:<20} {:>8}  {:<8}  {}",
             marker, m.name, m.size, status, m.description
         );
+    }
+}
+
+fn validated_existing_len(existing_len: u64, status: reqwest::StatusCode) -> Result<u64> {
+    if existing_len > 0 {
+        match status {
+            reqwest::StatusCode::PARTIAL_CONTENT => Ok(existing_len),
+            reqwest::StatusCode::OK => Ok(0),
+            _ => Err(WhsprError::Download(format!(
+                "download failed with HTTP {}",
+                status
+            ))),
+        }
+    } else if status.is_success() {
+        Ok(0)
+    } else {
+        Err(WhsprError::Download(format!(
+            "download failed with HTTP {}",
+            status
+        )))
     }
 }
 
@@ -202,26 +226,10 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
         .await
         .map_err(|e| WhsprError::Download(format!("failed to start download: {e}")))?;
 
-    let status = response.status();
-    if existing_len > 0 {
-        match status {
-            reqwest::StatusCode::PARTIAL_CONTENT => {}
-            reqwest::StatusCode::OK => {
-                println!("Server ignored range request, restarting download from zero");
-                existing_len = 0;
-            }
-            _ => {
-                return Err(WhsprError::Download(format!(
-                    "download failed with HTTP {}",
-                    status
-                )));
-            }
-        }
-    } else if !status.is_success() {
-        return Err(WhsprError::Download(format!(
-            "download failed with HTTP {}",
-            status
-        )));
+    let original_len = existing_len;
+    existing_len = validated_existing_len(existing_len, response.status())?;
+    if original_len > 0 && existing_len == 0 {
+        println!("Server ignored range request, restarting download from zero");
     }
 
     let total_size = if existing_len > 0 {
@@ -304,4 +312,44 @@ pub fn select_model(name: &str) -> Result<()> {
     println!("Selected model '{}' as active.", name);
     println!("Config updated: {}", config_path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_for_config_uses_tilde_when_under_home() {
+        let home = PathBuf::from("/home/alice");
+        let path = PathBuf::from("/home/alice/.local/share/whspr-rs/ggml.bin");
+        assert_eq!(
+            path_for_config(&path, Some(&home)),
+            "~/.local/share/whspr-rs/ggml.bin"
+        );
+    }
+
+    #[test]
+    fn path_for_config_keeps_absolute_when_outside_home() {
+        let home = PathBuf::from("/home/alice");
+        let path = PathBuf::from("/var/lib/whspr-rs/ggml.bin");
+        assert_eq!(path_for_config(&path, Some(&home)), "/var/lib/whspr-rs/ggml.bin");
+    }
+
+    #[test]
+    fn validated_existing_len_accepts_partial_content_resume() {
+        let len = validated_existing_len(100, reqwest::StatusCode::PARTIAL_CONTENT).unwrap();
+        assert_eq!(len, 100);
+    }
+
+    #[test]
+    fn validated_existing_len_restarts_on_ok_resume_response() {
+        let len = validated_existing_len(100, reqwest::StatusCode::OK).unwrap();
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn validated_existing_len_rejects_resume_on_error_status() {
+        let err = validated_existing_len(100, reqwest::StatusCode::RANGE_NOT_SATISFIABLE);
+        assert!(err.is_err());
+    }
 }
