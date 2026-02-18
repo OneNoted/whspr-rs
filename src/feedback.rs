@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 
@@ -104,12 +105,20 @@ impl FeedbackPlayer {
             None => return,
         };
         let (tx, rx) = mpsc::sync_channel(1);
-        let _ = sender.send(SoundCommand::Play {
-            custom_path: self.start_sound_path.clone(),
-            bundled: START_SOUND,
-            done: Some(tx),
-        });
-        let _ = rx.recv();
+        if sender
+            .send(SoundCommand::Play {
+                custom_path: self.start_sound_path.clone(),
+                bundled: START_SOUND,
+                done: Some(tx),
+            })
+            .is_err()
+        {
+            tracing::warn!("feedback thread unavailable, skipping start sound");
+            return;
+        }
+        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+            tracing::warn!("timed out waiting for start sound playback");
+        }
     }
 
     /// Blocks until the stop sound has finished playing.
@@ -125,12 +134,20 @@ impl FeedbackPlayer {
             None => return,
         };
         let (tx, rx) = mpsc::sync_channel(1);
-        let _ = sender.send(SoundCommand::Play {
-            custom_path: self.stop_sound_path.clone(),
-            bundled: STOP_SOUND,
-            done: Some(tx),
-        });
-        let _ = rx.recv();
+        if sender
+            .send(SoundCommand::Play {
+                custom_path: self.stop_sound_path.clone(),
+                bundled: STOP_SOUND,
+                done: Some(tx),
+            })
+            .is_err()
+        {
+            tracing::warn!("feedback thread unavailable, skipping stop sound");
+            return;
+        }
+        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+            tracing::warn!("timed out waiting for stop sound playback");
+        }
     }
 }
 
