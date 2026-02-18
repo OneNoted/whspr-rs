@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command, ModelAction};
 use crate::config::Config;
+use crate::error::WhsprError;
 use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
 struct PidLock {
@@ -179,11 +180,11 @@ async fn transcribe_file(
         WhisperLocal::new(&config.whisper, &model_path)
     })
     .await
-    .unwrap()?;
+    .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
 
     let text = tokio::task::spawn_blocking(move || backend.transcribe(&samples, 16000))
         .await
-        .unwrap()?;
+        .map_err(|e| WhsprError::Transcription(format!("transcription task failed: {e}")))??;
 
     if let Some(out_path) = output {
         tokio::fs::write(out_path, &text).await?;
