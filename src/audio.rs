@@ -246,13 +246,14 @@ fn append_mono_f32(data: &[f32], channels: usize, out: &mut Vec<f32>) {
 }
 
 fn append_mono_i16(data: &[i16], channels: usize, out: &mut Vec<f32>) {
+    const I16_SCALE: f32 = 32768.0;
     if channels <= 1 {
-        out.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
+        out.extend(data.iter().map(|s| *s as f32 / I16_SCALE));
         return;
     }
     out.reserve(data.len() / channels);
     for frame in data.chunks(channels) {
-        let sum: f32 = frame.iter().map(|s| *s as f32 / i16::MAX as f32).sum();
+        let sum: f32 = frame.iter().map(|s| *s as f32 / I16_SCALE).sum();
         out.push(sum / frame.len() as f32);
     }
 }
