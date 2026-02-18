@@ -117,6 +117,7 @@ fn xdg_dir(kind: &str) -> PathBuf {
             } else if let Ok(home) = std::env::var("HOME") {
                 PathBuf::from(home).join(".config")
             } else {
+                tracing::warn!("neither XDG_CONFIG_HOME nor HOME is set, falling back to /tmp");
                 PathBuf::from("/tmp")
             }
         }
@@ -126,10 +127,14 @@ fn xdg_dir(kind: &str) -> PathBuf {
             } else if let Ok(home) = std::env::var("HOME") {
                 PathBuf::from(home).join(".local").join("share")
             } else {
+                tracing::warn!("neither XDG_DATA_HOME nor HOME is set, falling back to /tmp");
                 PathBuf::from("/tmp")
             }
         }
-        _ => PathBuf::from("/tmp"),
+        _ => {
+            tracing::warn!("unknown XDG directory kind '{kind}', falling back to /tmp");
+            PathBuf::from("/tmp")
+        }
     }
 }
 
@@ -139,11 +144,13 @@ pub fn expand_tilde(path: &str) -> String {
             if let Ok(home) = std::env::var("HOME") {
                 return format!("{home}/{rest}");
             }
+            tracing::warn!("HOME is not set, cannot expand tilde in path: {path}");
         }
         None if path == "~" => {
             if let Ok(home) = std::env::var("HOME") {
                 return home;
             }
+            tracing::warn!("HOME is not set, cannot expand tilde in path: {path}");
         }
         _ => {}
     }
