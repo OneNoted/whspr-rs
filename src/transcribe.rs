@@ -88,11 +88,19 @@ impl TranscriptionBackend for WhisperLocal {
 
         // Gate: skip silent or too-short audio to avoid Whisper hallucinations
         if duration_secs < MIN_DURATION_SECS {
-            tracing::info!("audio too short ({:.2}s < {:.1}s), skipping", duration_secs, MIN_DURATION_SECS);
+            tracing::info!(
+                "audio too short ({:.2}s < {:.1}s), skipping",
+                duration_secs,
+                MIN_DURATION_SECS
+            );
             return Ok(String::new());
         }
         if rms < MIN_RMS_THRESHOLD {
-            tracing::info!("audio too quiet (RMS {:.4} < {}), skipping", rms, MIN_RMS_THRESHOLD);
+            tracing::info!(
+                "audio too quiet (RMS {:.4} < {}), skipping",
+                rms,
+                MIN_RMS_THRESHOLD
+            );
             return Ok(String::new());
         }
 
@@ -172,7 +180,9 @@ impl WhisperLocal {
                     Ok(s) => text.push_str(s),
                     Err(_) => {
                         if let Ok(lossy) = segment.to_str_lossy() {
-                            tracing::warn!("segment {i} contains invalid UTF-8, using lossy conversion");
+                            tracing::warn!(
+                                "segment {i} contains invalid UTF-8, using lossy conversion"
+                            );
                             text.push_str(&lossy);
                         }
                     }

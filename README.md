@@ -46,6 +46,13 @@ Run the interactive setup wizard to download a model and generate config:
 whspr-rs setup
 ```
 
+Use a custom config file for any command (including `setup` and `model`):
+
+```sh
+whspr-rs --config /path/to/config.toml setup
+whspr-rs --config /path/to/config.toml model select tiny
+```
+
 Or manage models manually:
 
 ```sh
@@ -70,7 +77,7 @@ bindsym $mod+Alt+d exec whspr-rs
 
 ## Configuration
 
-Config lives at `~/.config/whspr-rs/config.toml`. Generated automatically by `whspr-rs setup`, or copy from `config.example.toml`:
+Config lives at `~/.config/whspr-rs/config.toml` by default. Generated automatically by `whspr-rs setup`, or copy from `config.example.toml`:
 
 ```toml
 [audio]

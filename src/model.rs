@@ -1,11 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
-use crate::config::{self, data_dir, default_config_path, update_config_model_path};
+use crate::config::{self, data_dir, resolve_config_path, update_config_model_path};
 use crate::error::{Result, WhsprError};
+
+const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
 pub struct ModelInfo {
     pub name: &'static str,
@@ -112,8 +114,8 @@ pub fn model_path_for_config(filename: &str) -> String {
     path_for_config(&path, home.as_deref())
 }
 
-fn active_model_path() -> Option<String> {
-    let config_path = default_config_path();
+fn active_model_path(config_path_override: Option<&Path>) -> Option<String> {
+    let config_path = resolve_config_path(config_path_override);
     if !config_path.exists() {
         return None;
     }
@@ -134,9 +136,10 @@ fn model_status(info: &ModelInfo, active_resolved: Option<&std::path::Path>) -> 
     }
 }
 
-pub fn list_models() {
-    let active_resolved =
-        active_model_path().map(|p| std::path::PathBuf::from(config::expand_tilde(&p)));
+pub fn list_models(config_path_override: Option<&Path>) {
+    tracing::debug!("listing models with config override: {config_path_override:?}");
+    let active_resolved = active_model_path(config_path_override)
+        .map(|p| std::path::PathBuf::from(config::expand_tilde(&p)));
     println!(
         "{:<22} {:>8}  {:<8}  DESCRIPTION",
         "MODEL", "SIZE", "STATUS"
@@ -176,6 +179,10 @@ fn validated_existing_len(existing_len: u64, status: reqwest::StatusCode) -> Res
 }
 
 pub async fn download_model(name: &str) -> Result<PathBuf> {
+    download_model_from_base(name, MODEL_BASE_URL).await
+}
+
+pub(crate) async fn download_model_from_base(name: &str, base_url: &str) -> Result<PathBuf> {
     let info = find_model(name).ok_or_else(|| {
         let available: Vec<&str> = MODELS.iter().map(|m| m.name).collect();
         WhsprError::Download(format!(
@@ -189,6 +196,7 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     let part_path = dest.with_extension("bin.part");
 
     if dest.exists() {
+        tracing::info!("model '{name}' already downloaded at {}", dest.display());
         println!("Model '{}' already downloaded at {}", name, dest.display());
         return Ok(dest);
     }
@@ -199,10 +207,8 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
             .map_err(|e| WhsprError::Download(format!("failed to create data directory: {e}")))?;
     }
 
-    let url = format!(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
-        info.filename
-    );
+    let url = format!("{}/{}", base_url.trim_end_matches('/'), info.filename);
+    tracing::info!("downloading model '{}' from {}", info.name, url);
 
     println!("Downloading {} ({})...", info.name, info.size);
 
@@ -217,6 +223,7 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
 
     let mut request = client.get(&url);
     if existing_len > 0 {
+        tracing::info!("resuming model download from {existing_len} bytes");
         println!("Resuming from {} bytes...", existing_len);
         request = request.header("Range", format!("bytes={}-", existing_len));
     }
@@ -229,6 +236,7 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     let original_len = existing_len;
     existing_len = validated_existing_len(existing_len, response.status())?;
     if original_len > 0 && existing_len == 0 {
+        tracing::warn!("server ignored range request, restarting model download from zero");
         println!("Server ignored range request, restarting download from zero");
     }
 
@@ -284,11 +292,12 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     std::fs::rename(&part_path, &dest)
         .map_err(|e| WhsprError::Download(format!("failed to finalize download: {e}")))?;
 
+    tracing::info!("model '{}' saved to {}", info.name, dest.display());
     println!("Saved to {}", dest.display());
     Ok(dest)
 }
 
-pub fn select_model(name: &str) -> Result<()> {
+pub fn select_model(name: &str, config_path_override: Option<&Path>) -> Result<()> {
     let info =
         find_model(name).ok_or_else(|| WhsprError::Download(format!("unknown model '{name}'")))?;
 
@@ -300,12 +309,22 @@ pub fn select_model(name: &str) -> Result<()> {
         )));
     }
 
-    let config_path = default_config_path();
+    let config_path = resolve_config_path(config_path_override);
     let model_path_str = model_path_for_config(info.filename);
 
     if config_path.exists() {
+        tracing::info!(
+            "updating model selection in config {} to {}",
+            config_path.display(),
+            model_path_str
+        );
         update_config_model_path(&config_path, &model_path_str)?;
     } else {
+        tracing::info!(
+            "writing new config {} with selected model {}",
+            config_path.display(),
+            model_path_str
+        );
         config::write_default_config(&config_path, &model_path_str)?;
     }
 
@@ -317,6 +336,9 @@ pub fn select_model(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::error::WhsprError;
+    use httpmock::prelude::*;
 
     #[test]
     fn path_for_config_uses_tilde_when_under_home() {
@@ -332,7 +354,10 @@ mod tests {
     fn path_for_config_keeps_absolute_when_outside_home() {
         let home = PathBuf::from("/home/alice");
         let path = PathBuf::from("/var/lib/whspr-rs/ggml.bin");
-        assert_eq!(path_for_config(&path, Some(&home)), "/var/lib/whspr-rs/ggml.bin");
+        assert_eq!(
+            path_for_config(&path, Some(&home)),
+            "/var/lib/whspr-rs/ggml.bin"
+        );
     }
 
     #[test]
@@ -351,5 +376,154 @@ mod tests {
     fn validated_existing_len_rejects_resume_on_error_status() {
         let err = validated_existing_len(100, reqwest::StatusCode::RANGE_NOT_SATISFIABLE);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn active_model_path_uses_override_config() {
+        let config_path = crate::test_support::unique_temp_path("active-model-config", "toml");
+        crate::config::write_default_config(&config_path, "~/override-model.bin")
+            .expect("write config");
+        let active = active_model_path(Some(&config_path));
+        assert_eq!(active.as_deref(), Some("~/override-model.bin"));
+    }
+
+    #[test]
+    fn model_status_distinguishes_remote_local_and_active() {
+        let _env_lock = crate::test_support::env_lock();
+        let _guard = crate::test_support::EnvVarGuard::capture(&["HOME", "XDG_DATA_HOME"]);
+        let home = crate::test_support::unique_temp_dir("model-status-home");
+        crate::test_support::set_env("HOME", &home.to_string_lossy());
+        crate::test_support::remove_env("XDG_DATA_HOME");
+
+        let info = find_model("tiny").expect("tiny model should exist");
+        let path = model_path(info.filename);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        assert_eq!(model_status(info, None), "remote");
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create model directory");
+        }
+        std::fs::write(&path, b"stub").expect("write model file");
+        assert_eq!(model_status(info, None), "local");
+        assert_eq!(model_status(info, Some(path.as_path())), "active");
+    }
+
+    #[test]
+    fn select_model_rejects_missing_model_file() {
+        let _env_lock = crate::test_support::env_lock();
+        let _guard = crate::test_support::EnvVarGuard::capture(&["HOME", "XDG_DATA_HOME"]);
+        let home = crate::test_support::unique_temp_dir("select-missing-home");
+        crate::test_support::set_env("HOME", &home.to_string_lossy());
+        crate::test_support::remove_env("XDG_DATA_HOME");
+
+        let config_path = crate::test_support::unique_temp_path("select-missing-config", "toml");
+        let err = select_model("tiny", Some(&config_path)).expect_err("should fail");
+        match err {
+            WhsprError::Download(msg) => {
+                assert!(
+                    msg.contains("not downloaded"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_model_updates_custom_config_path() {
+        let _env_lock = crate::test_support::env_lock();
+        let _guard = crate::test_support::EnvVarGuard::capture(&["HOME", "XDG_DATA_HOME"]);
+        let home = crate::test_support::unique_temp_dir("select-custom-home");
+        crate::test_support::set_env("HOME", &home.to_string_lossy());
+        crate::test_support::remove_env("XDG_DATA_HOME");
+
+        let tiny = find_model("tiny").expect("tiny model should exist");
+        let model_file = home
+            .join(".local")
+            .join("share")
+            .join("whspr-rs")
+            .join(tiny.filename);
+        std::fs::create_dir_all(model_file.parent().expect("model parent path"))
+            .expect("create model parent");
+        std::fs::write(&model_file, b"stub model").expect("write model");
+
+        let config_path = crate::test_support::unique_temp_path("select-custom-config", "toml");
+        select_model("tiny", Some(&config_path)).expect("select model");
+
+        let loaded = Config::load(Some(&config_path)).expect("load selected config");
+        assert_eq!(
+            loaded.whisper.model_path,
+            "~/.local/share/whspr-rs/ggml-tiny.bin"
+        );
+    }
+
+    #[test]
+    fn download_model_from_base_resumes_partial_download() {
+        let _env_lock = crate::test_support::env_lock();
+        let _guard = crate::test_support::EnvVarGuard::capture(&["HOME", "XDG_DATA_HOME"]);
+        let home = crate::test_support::unique_temp_dir("download-resume-home");
+        crate::test_support::set_env("HOME", &home.to_string_lossy());
+        crate::test_support::remove_env("XDG_DATA_HOME");
+
+        let tiny = find_model("tiny").expect("tiny model should exist");
+        let dest = model_path(tiny.filename);
+        let part_path = dest.with_extension("bin.part");
+        std::fs::create_dir_all(dest.parent().expect("model parent")).expect("create model dir");
+        std::fs::write(&part_path, b"abc").expect("write partial model");
+
+        let server = MockServer::start();
+        let resumed = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/{}", tiny.filename))
+                .header("range", "bytes=3-");
+            then.status(206).header("content-length", "3").body("def");
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(download_model_from_base("tiny", &server.base_url()))
+            .expect("download should succeed");
+        resumed.assert();
+        assert_eq!(result, dest);
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read final model"),
+            "abcdef"
+        );
+        assert!(!part_path.exists(), "part file should be renamed away");
+    }
+
+    #[test]
+    fn download_model_from_base_restarts_when_server_ignores_range() {
+        let _env_lock = crate::test_support::env_lock();
+        let _guard = crate::test_support::EnvVarGuard::capture(&["HOME", "XDG_DATA_HOME"]);
+        let home = crate::test_support::unique_temp_dir("download-restart-home");
+        crate::test_support::set_env("HOME", &home.to_string_lossy());
+        crate::test_support::remove_env("XDG_DATA_HOME");
+
+        let tiny = find_model("tiny").expect("tiny model should exist");
+        let dest = model_path(tiny.filename);
+        let part_path = dest.with_extension("bin.part");
+        std::fs::create_dir_all(dest.parent().expect("model parent")).expect("create model dir");
+        std::fs::write(&part_path, b"stale").expect("write stale partial");
+
+        let server = MockServer::start();
+        let restarted = server.mock(|when, then| {
+            when.method(GET).path(format!("/{}", tiny.filename));
+            then.status(200).header("content-length", "3").body("new");
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let result = runtime
+            .block_on(download_model_from_base("tiny", &server.base_url()))
+            .expect("download should succeed");
+        restarted.assert();
+        assert_eq!(result, dest);
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("read final model"),
+            "new"
+        );
+        assert!(!part_path.exists(), "part file should be renamed away");
     }
 }

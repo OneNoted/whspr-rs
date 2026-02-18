@@ -8,6 +8,8 @@ mod file_audio;
 mod inject;
 mod model;
 mod setup;
+#[cfg(test)]
+mod test_support;
 mod transcribe;
 
 use std::path::{Path, PathBuf};
@@ -176,11 +178,10 @@ async fn transcribe_file(
     tracing::info!("decoding audio file: {}", file.display());
     let samples = file_audio::decode_audio_file(file)?;
 
-    let backend = tokio::task::spawn_blocking(move || {
-        WhisperLocal::new(&config.whisper, &model_path)
-    })
-    .await
-    .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
+    let backend =
+        tokio::task::spawn_blocking(move || WhisperLocal::new(&config.whisper, &model_path))
+            .await
+            .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
 
     let text = tokio::task::spawn_blocking(move || backend.transcribe(&samples, 16000))
         .await
@@ -218,20 +219,20 @@ async fn main() -> crate::error::Result<()> {
 
     match &cli.command {
         None => run_default(&cli).await,
-        Some(Command::Setup) => setup::run_setup().await,
+        Some(Command::Setup) => setup::run_setup(cli.config.as_deref()).await,
         Some(Command::Transcribe { file, output }) => {
             transcribe_file(&cli, file, output.as_deref()).await
         }
         Some(Command::Model { action }) => match action {
             ModelAction::List => {
-                model::list_models();
+                model::list_models(cli.config.as_deref());
                 Ok(())
             }
             ModelAction::Download { name } => {
                 model::download_model(name).await?;
                 Ok(())
             }
-            ModelAction::Select { name } => model::select_model(name),
+            ModelAction::Select { name } => model::select_model(name, cli.config.as_deref()),
         },
     }
 }

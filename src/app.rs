@@ -1,4 +1,7 @@
-use std::process::{Child, Command};
+use std::process::Child;
+
+#[cfg(feature = "osd")]
+use std::process::Command;
 
 use crate::audio::AudioRecorder;
 use crate::config::Config;
@@ -9,7 +12,8 @@ use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
 pub async fn run(config: Config) -> Result<()> {
     // Register signals before startup work to minimize early-signal races.
-    let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+    let mut sigusr1 =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     let feedback = FeedbackPlayer::new(
@@ -88,6 +92,7 @@ pub async fn run(config: Config) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "osd")]
 fn spawn_osd() -> Option<Child> {
     // Look for whspr-osd next to our own binary first, then fall back to PATH
     let osd_path = std::env::current_exe()
@@ -108,6 +113,11 @@ fn spawn_osd() -> Option<Child> {
     }
 }
 
+#[cfg(not(feature = "osd"))]
+fn spawn_osd() -> Option<Child> {
+    None
+}
+
 fn kill_osd(child: &mut Option<Child>) {
     if let Some(mut c) = child.take() {
         let pid = c.id() as libc::pid_t;
@@ -116,5 +126,17 @@ fn kill_osd(child: &mut Option<Child>) {
         }
         let _ = c.wait();
         tracing::debug!("whspr-osd (pid {pid}) terminated");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kill_osd_none_is_noop() {
+        let mut child: Option<Child> = None;
+        kill_osd(&mut child);
+        assert!(child.is_none());
     }
 }

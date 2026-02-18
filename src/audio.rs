@@ -6,6 +6,8 @@ use cpal::{SampleFormat, StreamConfig};
 use crate::config::AudioConfig;
 use crate::error::{Result, WhsprError};
 
+const PREALLOC_SECONDS: usize = 120;
+
 pub struct AudioRecorder {
     config: AudioConfig,
     buffer: Arc<Mutex<Vec<f32>>>,
@@ -46,8 +48,7 @@ impl AudioRecorder {
             .unwrap_or_else(|_| "unknown".into());
         tracing::info!("using input device: {device_name}");
 
-        let (stream_config, sample_format) =
-            choose_input_config(&device, self.config.sample_rate)?;
+        let (stream_config, sample_format) = choose_input_config(&device, self.config.sample_rate)?;
         if stream_config.channels != 1 {
             tracing::warn!(
                 "device input has {} channels; downmixing to mono",
@@ -62,12 +63,23 @@ impl AudioRecorder {
         );
 
         let buffer = Arc::clone(&self.buffer);
-        buffer
-            .lock()
-            .map_err(|_| WhsprError::Audio("audio buffer lock poisoned".into()))?
-            .clear();
+        {
+            let mut guard = buffer
+                .lock()
+                .map_err(|_| WhsprError::Audio("audio buffer lock poisoned".into()))?;
+            guard.clear();
+            let prealloc_samples =
+                (self.config.sample_rate as usize).saturating_mul(PREALLOC_SECONDS);
+            let capacity = guard.capacity();
+            if capacity < prealloc_samples {
+                guard.reserve_exact(prealloc_samples - capacity);
+            }
+        }
         let channels = stream_config.channels as usize;
 
+        // The callback still takes a mutex on the realtime thread. Preallocation
+        // and reserve calls reduce realloc pressure, but a lock-free buffer would
+        // be the next step for strict realtime guarantees.
         let err_fn = |err: cpal::StreamError| {
             tracing::error!("audio stream error: {err}");
         };
@@ -166,7 +178,10 @@ impl AudioRecorder {
     }
 }
 
-fn choose_input_config(device: &cpal::Device, sample_rate: u32) -> Result<(StreamConfig, SampleFormat)> {
+fn choose_input_config(
+    device: &cpal::Device,
+    sample_rate: u32,
+) -> Result<(StreamConfig, SampleFormat)> {
     let supported = device
         .supported_input_configs()
         .map_err(|e| WhsprError::Audio(format!("failed to get supported configs: {e}")))?;
@@ -223,6 +238,7 @@ fn append_mono_f32(data: &[f32], channels: usize, out: &mut Vec<f32>) {
         out.extend_from_slice(data);
         return;
     }
+    out.reserve(data.len() / channels);
     for frame in data.chunks(channels) {
         let sum: f32 = frame.iter().copied().sum();
         out.push(sum / frame.len() as f32);
@@ -234,6 +250,7 @@ fn append_mono_i16(data: &[i16], channels: usize, out: &mut Vec<f32>) {
         out.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
         return;
     }
+    out.reserve(data.len() / channels);
     for frame in data.chunks(channels) {
         let sum: f32 = frame.iter().map(|s| *s as f32 / i16::MAX as f32).sum();
         out.push(sum / frame.len() as f32);
@@ -242,9 +259,13 @@ fn append_mono_i16(data: &[i16], channels: usize, out: &mut Vec<f32>) {
 
 fn append_mono_u16(data: &[u16], channels: usize, out: &mut Vec<f32>) {
     if channels <= 1 {
-        out.extend(data.iter().map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0));
+        out.extend(
+            data.iter()
+                .map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+        );
         return;
     }
+    out.reserve(data.len() / channels);
     for frame in data.chunks(channels) {
         let sum: f32 = frame
             .iter()

@@ -1,8 +1,8 @@
 use std::io::BufReader;
 use std::path::Path;
 
-use rodio::source::UniformSourceIterator;
 use rodio::Decoder;
+use rodio::source::UniformSourceIterator;
 
 use crate::error::{Result, WhsprError};
 

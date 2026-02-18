@@ -216,7 +216,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let shm_file = unsafe { std::fs::File::from_raw_fd(shm_fd) };
     shm_file.set_len(shm_size as u64)?;
-    let shm = state.shm.as_ref().ok_or("wl_shm not advertised by wayland server")?;
+    let shm = state
+        .shm
+        .as_ref()
+        .ok_or("wl_shm not advertised by wayland server")?;
     let pool = shm.create_pool(shm_file.as_fd(), shm_size, &qh, ());
 
     // Main animation loop
@@ -447,7 +450,7 @@ fn present_frame(
     let surface = state
         .surface
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "wayland surface not initialized"))?;
+        .ok_or_else(|| std::io::Error::other("wayland surface not initialized"))?;
     surface.attach(Some(&buffer), 0, 0);
     surface.damage_buffer(0, 0, w as i32, h as i32);
     surface.commit();
