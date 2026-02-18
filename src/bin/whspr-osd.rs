@@ -169,8 +169,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_queue.roundtrip(&mut state)?;
 
     // Create layer surface
-    let compositor = state.compositor.as_ref().expect("no wl_compositor");
-    let layer_shell = state.layer_shell.as_ref().expect("no zwlr_layer_shell_v1");
+    let compositor = state
+        .compositor
+        .as_ref()
+        .ok_or("compositor not advertised by wayland server")?;
+    let layer_shell = state
+        .layer_shell
+        .as_ref()
+        .ok_or("zwlr_layer_shell_v1 not supported by compositor")?;
 
     let surface = compositor.create_surface(&qh, ());
     let layer_surface = layer_shell.get_layer_surface(
@@ -210,14 +216,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let shm_file = unsafe { std::fs::File::from_raw_fd(shm_fd) };
     shm_file.set_len(shm_size as u64)?;
-    let shm = state.shm.as_ref().expect("no wl_shm");
+    let shm = state.shm.as_ref().ok_or("wl_shm not advertised by wayland server")?;
     let pool = shm.create_pool(shm_file.as_fd(), shm_size, &qh, ());
 
     // Main animation loop
     while state.running && !SHOULD_EXIT.load(Ordering::Relaxed) {
         conn.flush()?;
 
-        let read_guard = event_queue.prepare_read().expect("single-threaded");
+        let Some(read_guard) = event_queue.prepare_read() else {
+            event_queue.dispatch_pending(&mut state)?;
+            continue;
+        };
         let mut pollfd = libc::pollfd {
             fd: read_guard.connection_fd().as_raw_fd(),
             events: libc::POLLIN,
@@ -277,12 +286,29 @@ unsafe extern "C" fn handle_signal(_sig: libc::c_int) {
 fn start_audio_capture(level: Arc<AudioLevel>) -> Option<cpal::Stream> {
     let host = cpal::default_host();
     let device = host.default_input_device()?;
-    let config = cpal::StreamConfig {
-        channels: 1,
-        sample_rate: 16000,
-        buffer_size: cpal::BufferSize::Default,
-    };
 
+    // Try to find a supported config at 16kHz, preferring mono then fewer channels
+    let config = device
+        .supported_input_configs()
+        .ok()
+        .and_then(|configs| {
+            configs
+                .filter(|c| c.min_sample_rate() <= 16000 && c.max_sample_rate() >= 16000)
+                .filter(|c| c.sample_format() == cpal::SampleFormat::F32)
+                .min_by_key(|c| c.channels())
+                .map(|c| cpal::StreamConfig {
+                    channels: c.channels(),
+                    sample_rate: 16000,
+                    buffer_size: cpal::BufferSize::Default,
+                })
+        })
+        .unwrap_or(cpal::StreamConfig {
+            channels: 1,
+            sample_rate: 16000,
+            buffer_size: cpal::BufferSize::Default,
+        });
+
+    let channels = config.channels as usize;
     let stream = device
         .build_input_stream(
             &config,
@@ -290,8 +316,22 @@ fn start_audio_capture(level: Arc<AudioLevel>) -> Option<cpal::Stream> {
                 if data.is_empty() {
                     return;
                 }
-                let sum: f32 = data.iter().map(|s| s * s).sum();
-                let rms = (sum / data.len() as f32).sqrt();
+                // Downmix to mono if needed, then compute RMS
+                let sample_count = data.len() / channels.max(1);
+                if sample_count == 0 {
+                    return;
+                }
+                let sum: f32 = if channels <= 1 {
+                    data.iter().map(|s| s * s).sum()
+                } else {
+                    data.chunks(channels)
+                        .map(|frame| {
+                            let mono: f32 = frame.iter().sum::<f32>() / frame.len() as f32;
+                            mono * mono
+                        })
+                        .sum()
+                };
+                let rms = (sum / sample_count as f32).sqrt();
                 level.set(rms);
             },
             |err| eprintln!("audio capture error: {err}"),
@@ -404,7 +444,10 @@ fn present_frame(
         (),
     );
 
-    let surface = state.surface.as_ref().unwrap();
+    let surface = state
+        .surface
+        .as_ref()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "wayland surface not initialized"))?;
     surface.attach(Some(&buffer), 0, 0);
     surface.damage_buffer(0, 0, w as i32, h as i32);
     surface.commit();
