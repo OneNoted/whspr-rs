@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  default-features:
+  lint-and-test-cpu-osd:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,10 +18,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install Linux audio build deps
+      - name: Install Linux build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libasound2-dev
+          sudo apt-get install -y build-essential cmake clang pkg-config libasound2-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -29,13 +29,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (cpu + osd)
+        run: cargo clippy --all-targets --no-default-features --features osd -- -D warnings
 
-      - name: Test
-        run: cargo test
+      - name: Test (cpu + osd)
+        run: cargo test --no-default-features --features osd
 
-  no-default-features:
+  feature-checks:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,10 +44,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux audio build deps
+      - name: Install Linux build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libasound2-dev
+          sudo apt-get install -y build-essential cmake clang pkg-config libasound2-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -55,8 +55,13 @@ jobs:
       - name: Check no default features
         run: cargo check --no-default-features
 
-      - name: Check cuda feature only
-        run: cargo check --no-default-features --features cuda
-
       - name: Check osd feature only
         run: cargo check --no-default-features --features osd
+
+      - name: Check cuda feature only (if toolkit available)
+        run: |
+          if command -v nvcc >/dev/null 2>&1; then
+            cargo check --no-default-features --features cuda
+          else
+            echo "::warning::CUDA toolkit not available on this runner - skipping cuda feature check"
+          fi
