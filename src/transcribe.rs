@@ -26,15 +26,24 @@ impl WhisperLocal {
         tracing::info!("loading whisper model from {}", model_path.display());
 
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
-        ctx_params.flash_attn(true);
-        tracing::info!("GPU acceleration enabled (flash_attn=true)");
+        ctx_params.use_gpu(config.use_gpu);
+        ctx_params.flash_attn(config.use_gpu && config.flash_attn);
+        tracing::info!(
+            "whisper acceleration: use_gpu={}, flash_attn={}",
+            config.use_gpu,
+            config.use_gpu && config.flash_attn
+        );
 
-        let ctx =
-            WhisperContext::new_with_params(model_path.to_str().unwrap_or_default(), ctx_params)
-                .map_err(|e| {
+        let ctx = WhisperContext::new_with_params(model_path.to_str().unwrap_or_default(), ctx_params)
+            .map_err(|e| {
+                if config.use_gpu {
+                    WhsprError::Transcription(format!(
+                        "failed to load whisper model with GPU enabled: {e}. Set [whisper].use_gpu = false to force CPU."
+                    ))
+                } else {
                     WhsprError::Transcription(format!("failed to load whisper model: {e}"))
-                })?;
+                }
+            })?;
 
         tracing::info!("whisper model loaded successfully");
 

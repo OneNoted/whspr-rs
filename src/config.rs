@@ -24,6 +24,8 @@ pub struct AudioConfig {
 pub struct WhisperConfig {
     pub model_path: String,
     pub language: String,
+    pub use_gpu: bool,
+    pub flash_attn: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -52,6 +54,8 @@ impl Default for WhisperConfig {
         Self {
             model_path: "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin".into(),
             language: "auto".into(),
+            use_gpu: true,
+            flash_attn: true,
         }
     }
 }
@@ -167,6 +171,10 @@ sample_rate = 16000
 model_path = "{model_path}"
 # Language code ("en", "fr", "de", etc.) or "auto" for auto-detect
 language = "auto"
+# Enable GPU acceleration (set false to force CPU)
+use_gpu = true
+# Enable flash attention when GPU is enabled
+flash_attn = true
 
 [feedback]
 # Play sound feedback on start/stop
