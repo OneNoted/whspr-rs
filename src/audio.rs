@@ -46,55 +46,72 @@ impl AudioRecorder {
             .unwrap_or_else(|_| "unknown".into());
         tracing::info!("using input device: {device_name}");
 
-        let stream_config = StreamConfig {
-            channels: 1,
-            sample_rate: self.config.sample_rate,
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        // Check if the device supports our desired config, fall back to supported config
-        let supported = device
-            .supported_input_configs()
-            .map_err(|e| WhsprError::Audio(format!("failed to get supported configs: {e}")))?;
-
-        let mut found_matching = false;
-        for cfg in supported {
-            if cfg.channels() == 1
-                && cfg.min_sample_rate() <= self.config.sample_rate
-                && cfg.max_sample_rate() >= self.config.sample_rate
-                && cfg.sample_format() == SampleFormat::F32
-            {
-                found_matching = true;
-                break;
-            }
-        }
-
-        if !found_matching {
+        let (stream_config, sample_format) =
+            choose_input_config(&device, self.config.sample_rate)?;
+        if stream_config.channels != 1 {
             tracing::warn!(
-                "device may not natively support mono {}Hz f32, will attempt anyway",
-                self.config.sample_rate
+                "device input has {} channels; downmixing to mono",
+                stream_config.channels
             );
         }
+        tracing::info!(
+            "audio stream config: {} Hz, {} channels, {:?}",
+            stream_config.sample_rate,
+            stream_config.channels,
+            sample_format
+        );
 
         let buffer = Arc::clone(&self.buffer);
         buffer.lock().expect("audio buffer lock").clear();
+        let channels = stream_config.channels as usize;
 
         let err_fn = |err: cpal::StreamError| {
             tracing::error!("audio stream error: {err}");
         };
 
-        let stream = device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut buf) = buffer.lock() {
-                        buf.extend_from_slice(data);
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?;
+        let stream = match sample_format {
+            SampleFormat::F32 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_f32(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            SampleFormat::I16 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_i16(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            SampleFormat::U16 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_u16(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            other => {
+                return Err(WhsprError::Audio(format!(
+                    "unsupported input sample format: {other:?}"
+                )));
+            }
+        };
 
         stream
             .play()
@@ -137,5 +154,88 @@ impl AudioRecorder {
         }
 
         Ok(buffer)
+    }
+}
+
+fn choose_input_config(device: &cpal::Device, sample_rate: u32) -> Result<(StreamConfig, SampleFormat)> {
+    let supported = device
+        .supported_input_configs()
+        .map_err(|e| WhsprError::Audio(format!("failed to get supported configs: {e}")))?;
+
+    let mut best: Option<(u8, StreamConfig, SampleFormat)> = None;
+
+    for cfg in supported {
+        if cfg.min_sample_rate() > sample_rate || cfg.max_sample_rate() < sample_rate {
+            continue;
+        }
+        let format_score = match cfg.sample_format() {
+            SampleFormat::F32 => 3,
+            SampleFormat::I16 => 2,
+            SampleFormat::U16 => 1,
+            _ => 0,
+        };
+        if format_score == 0 {
+            continue;
+        }
+        let channel_score = if cfg.channels() == 1 { 2 } else { 1 };
+        let score = channel_score * 10 + format_score;
+
+        let config = StreamConfig {
+            channels: cfg.channels(),
+            sample_rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let replace = best
+            .as_ref()
+            .map(|(best_score, _, _)| score > *best_score)
+            .unwrap_or(true);
+        if replace {
+            best = Some((score, config, cfg.sample_format()));
+        }
+    }
+
+    best.map(|(_, config, format)| (config, format))
+        .ok_or_else(|| {
+            WhsprError::Audio(format!(
+                "no supported input config for {} Hz (supported formats must be f32, i16, or u16)",
+                sample_rate
+            ))
+        })
+}
+
+fn append_mono_f32(data: &[f32], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend_from_slice(data);
+        return;
+    }
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame.iter().copied().sum();
+        out.push(sum / frame.len() as f32);
+    }
+}
+
+fn append_mono_i16(data: &[i16], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
+        return;
+    }
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame.iter().map(|s| *s as f32 / i16::MAX as f32).sum();
+        out.push(sum / frame.len() as f32);
+    }
+}
+
+fn append_mono_u16(data: &[u16], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend(data.iter().map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0));
+        return;
+    }
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame
+            .iter()
+            .map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0)
+            .sum();
+        out.push(sum / frame.len() as f32);
     }
 }
