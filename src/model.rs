@@ -97,6 +97,17 @@ fn model_path(filename: &str) -> PathBuf {
     data_dir().join(filename)
 }
 
+pub fn model_path_for_config(filename: &str) -> String {
+    let path = model_path(filename);
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(home);
+        if let Ok(stripped) = path.strip_prefix(&home_path) {
+            return format!("~/{}", stripped.display());
+        }
+    }
+    path.display().to_string()
+}
+
 fn active_model_path() -> Option<String> {
     let config_path = default_config_path();
     if !config_path.exists() {
@@ -282,7 +293,7 @@ pub fn select_model(name: &str) -> Result<()> {
     }
 
     let config_path = default_config_path();
-    let model_path_str = format!("~/.local/share/whspr-rs/{}", info.filename);
+    let model_path_str = model_path_for_config(info.filename);
 
     if config_path.exists() {
         update_config_model_path(&config_path, &model_path_str)?;

@@ -30,7 +30,7 @@ pub async fn run_setup() -> Result<()> {
 
     // Generate or update config
     let config_path = default_config_path();
-    let model_path_str = format!("~/.local/share/whspr-rs/{}", chosen.filename);
+    let model_path_str = model::model_path_for_config(chosen.filename);
 
     if config_path.exists() {
         println!("Config already exists at {}", config_path.display());
