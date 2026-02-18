@@ -239,3 +239,42 @@ fn append_mono_u16(data: &[u16], channels: usize, out: &mut Vec<f32>) {
         out.push(sum / frame.len() as f32);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn append_mono_f32_passthrough_for_single_channel() {
+        let mut out = Vec::new();
+        append_mono_f32(&[0.1, -0.2, 0.3], 1, &mut out);
+        assert_eq!(out, vec![0.1, -0.2, 0.3]);
+    }
+
+    #[test]
+    fn append_mono_f32_downmixes_stereo() {
+        let mut out = Vec::new();
+        append_mono_f32(&[1.0, -1.0, 0.5, 0.5], 2, &mut out);
+        assert!(approx_eq(out[0], 0.0, 1e-6));
+        assert!(approx_eq(out[1], 0.5, 1e-6));
+    }
+
+    #[test]
+    fn append_mono_i16_converts_to_f32() {
+        let mut out = Vec::new();
+        append_mono_i16(&[i16::MAX, i16::MIN], 1, &mut out);
+        assert!(approx_eq(out[0], 1.0, 1e-4));
+        assert!(out[1] < -0.99);
+    }
+
+    #[test]
+    fn append_mono_u16_downmixes_and_converts() {
+        let mut out = Vec::new();
+        append_mono_u16(&[0, u16::MAX], 2, &mut out);
+        assert!(approx_eq(out[0], 0.0, 0.01));
+    }
+}
