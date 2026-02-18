@@ -48,60 +48,66 @@ impl FeedbackPlayer {
             Some(stop_sound.to_string())
         };
 
-        let (sender, receiver) = mpsc::channel::<SoundCommand>();
+        let (sender, thread) = if enabled {
+            let (sender, receiver) = mpsc::channel::<SoundCommand>();
+            let thread = std::thread::spawn(move || {
+                // Lazily open the output stream so transient startup failures can recover.
+                let mut stream: Option<rodio::OutputStream> = None;
 
-        let thread = std::thread::spawn(move || {
-            // Lazily open the output stream so transient startup failures can recover.
-            let mut stream: Option<rodio::OutputStream> = None;
-
-            while let Ok(cmd) = receiver.recv() {
-                match cmd {
-                    SoundCommand::Play {
-                        custom_path,
-                        bundled,
-                        done,
-                    } => {
-                        if stream.is_none() {
-                            match OutputStreamBuilder::open_default_stream() {
-                                Ok(s) => stream = Some(s),
-                                Err(e) => {
-                                    tracing::warn!("failed to open audio output for feedback: {e}");
-                                    if let Some(done) = done {
-                                        let _ = done.send(());
+                while let Ok(cmd) = receiver.recv() {
+                    match cmd {
+                        SoundCommand::Play {
+                            custom_path,
+                            bundled,
+                            done,
+                        } => {
+                            if stream.is_none() {
+                                match OutputStreamBuilder::open_default_stream() {
+                                    Ok(s) => stream = Some(s),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "failed to open audio output for feedback: {e}"
+                                        );
+                                        if let Some(done) = done {
+                                            let _ = done.send(());
+                                        }
+                                        continue;
                                     }
-                                    continue;
                                 }
                             }
-                        }
 
-                        if let Err(e) = play_on_stream(
-                            stream.as_ref().expect("stream set"),
-                            custom_path.as_deref(),
-                            bundled,
-                        ) {
-                            tracing::warn!("failed to play feedback sound: {e}");
-                        }
-                        if let Some(done) = done {
-                            let _ = done.send(());
+                            if let Err(e) = play_on_stream(
+                                stream.as_ref().expect("stream set"),
+                                custom_path.as_deref(),
+                                bundled,
+                            ) {
+                                tracing::warn!("failed to play feedback sound: {e}");
+                            }
+                            if let Some(done) = done {
+                                let _ = done.send(());
+                            }
                         }
                     }
                 }
-            }
 
-            // Leak the OutputStream — cpal's ALSA backend calls snd_pcm_close()
-            // on drop without draining first, which causes an audible click on
-            // PipeWire.  The OS reclaims file descriptors on process exit.
-            if let Some(stream) = stream {
-                std::mem::forget(stream);
-            }
-        });
+                // Leak the OutputStream — cpal's ALSA backend calls snd_pcm_close()
+                // on drop without draining first, which causes an audible click on
+                // PipeWire.  The OS reclaims file descriptors on process exit.
+                if let Some(stream) = stream {
+                    std::mem::forget(stream);
+                }
+            });
+            (Some(sender), Some(thread))
+        } else {
+            (None, None)
+        };
 
         Self {
             enabled,
             start_sound_path,
             stop_sound_path,
-            sender: Some(sender),
-            thread: Some(thread),
+            sender,
+            thread,
         }
     }
 

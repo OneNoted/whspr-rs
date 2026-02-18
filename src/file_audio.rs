@@ -6,7 +6,7 @@ use rodio::source::UniformSourceIterator;
 
 use crate::error::{Result, WhsprError};
 
-const TARGET_SAMPLE_RATE: u32 = 16000;
+pub const TARGET_SAMPLE_RATE: u32 = 16000;
 
 /// Decode an audio file to mono 16 kHz f32 samples suitable for Whisper.
 pub fn decode_audio_file(path: &Path) -> Result<Vec<f32>> {
