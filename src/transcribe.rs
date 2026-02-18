@@ -26,15 +26,31 @@ impl WhisperLocal {
         tracing::info!("loading whisper model from {}", model_path.display());
 
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
-        ctx_params.flash_attn(true);
-        tracing::info!("GPU acceleration enabled (flash_attn=true)");
+        ctx_params.use_gpu(config.use_gpu);
+        ctx_params.flash_attn(config.use_gpu && config.flash_attn);
+        tracing::info!(
+            "whisper acceleration: use_gpu={}, flash_attn={}",
+            config.use_gpu,
+            config.use_gpu && config.flash_attn
+        );
 
-        let ctx =
-            WhisperContext::new_with_params(model_path.to_str().unwrap_or_default(), ctx_params)
-                .map_err(|e| {
+        let model_path_str = model_path.to_str().ok_or_else(|| {
+            WhsprError::Transcription(format!(
+                "model path contains invalid UTF-8: {}",
+                model_path.display()
+            ))
+        })?;
+
+        let ctx = WhisperContext::new_with_params(model_path_str, ctx_params)
+            .map_err(|e| {
+                if config.use_gpu {
+                    WhsprError::Transcription(format!(
+                        "failed to load whisper model with GPU enabled: {e}. Set [whisper].use_gpu = false to force CPU."
+                    ))
+                } else {
                     WhsprError::Transcription(format!("failed to load whisper model: {e}"))
-                })?;
+                }
+            })?;
 
         tracing::info!("whisper model loaded successfully");
 
@@ -55,6 +71,11 @@ const MIN_DURATION_SECS: f64 = 0.3;
 
 impl TranscriptionBackend for WhisperLocal {
     fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<String> {
+        if audio.is_empty() || sample_rate == 0 {
+            tracing::info!("empty audio or zero sample rate, skipping");
+            return Ok(String::new());
+        }
+
         // Audio diagnostics
         let duration_secs = audio.len() as f64 / sample_rate as f64;
         let rms = (audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32).sqrt();
@@ -67,11 +88,19 @@ impl TranscriptionBackend for WhisperLocal {
 
         // Gate: skip silent or too-short audio to avoid Whisper hallucinations
         if duration_secs < MIN_DURATION_SECS {
-            tracing::info!("audio too short ({:.2}s < {:.1}s), skipping", duration_secs, MIN_DURATION_SECS);
+            tracing::info!(
+                "audio too short ({:.2}s < {:.1}s), skipping",
+                duration_secs,
+                MIN_DURATION_SECS
+            );
             return Ok(String::new());
         }
         if rms < MIN_RMS_THRESHOLD {
-            tracing::info!("audio too quiet (RMS {:.4} < {}), skipping", rms, MIN_RMS_THRESHOLD);
+            tracing::info!(
+                "audio too quiet (RMS {:.4} < {}), skipping",
+                rms,
+                MIN_RMS_THRESHOLD
+            );
             return Ok(String::new());
         }
 
@@ -147,8 +176,16 @@ impl WhisperLocal {
         let mut text = String::new();
         for i in 0..num_segments {
             if let Some(segment) = state.get_segment(i) {
-                if let Ok(s) = segment.to_str() {
-                    text.push_str(s);
+                match segment.to_str() {
+                    Ok(s) => text.push_str(s),
+                    Err(_) => {
+                        if let Ok(lossy) = segment.to_str_lossy() {
+                            tracing::warn!(
+                                "segment {i} contains invalid UTF-8, using lossy conversion"
+                            );
+                            text.push_str(&lossy);
+                        }
+                    }
                 }
             }
         }

@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 
@@ -50,14 +51,8 @@ impl FeedbackPlayer {
         let (sender, receiver) = mpsc::channel::<SoundCommand>();
 
         let thread = std::thread::spawn(move || {
-            // Open the output stream once and keep it alive for the thread's lifetime.
-            let stream = match OutputStreamBuilder::open_default_stream() {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("failed to open audio output for feedback: {e}");
-                    return;
-                }
-            };
+            // Lazily open the output stream so transient startup failures can recover.
+            let mut stream: Option<rodio::OutputStream> = None;
 
             while let Ok(cmd) = receiver.recv() {
                 match cmd {
@@ -66,7 +61,24 @@ impl FeedbackPlayer {
                         bundled,
                         done,
                     } => {
-                        if let Err(e) = play_on_stream(&stream, custom_path.as_deref(), bundled) {
+                        if stream.is_none() {
+                            match OutputStreamBuilder::open_default_stream() {
+                                Ok(s) => stream = Some(s),
+                                Err(e) => {
+                                    tracing::warn!("failed to open audio output for feedback: {e}");
+                                    if let Some(done) = done {
+                                        let _ = done.send(());
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if let Err(e) = play_on_stream(
+                            stream.as_ref().expect("stream set"),
+                            custom_path.as_deref(),
+                            bundled,
+                        ) {
                             tracing::warn!("failed to play feedback sound: {e}");
                         }
                         if let Some(done) = done {
@@ -79,7 +91,9 @@ impl FeedbackPlayer {
             // Leak the OutputStream — cpal's ALSA backend calls snd_pcm_close()
             // on drop without draining first, which causes an audible click on
             // PipeWire.  The OS reclaims file descriptors on process exit.
-            std::mem::forget(stream);
+            if let Some(stream) = stream {
+                std::mem::forget(stream);
+            }
         });
 
         Self {
@@ -104,12 +118,20 @@ impl FeedbackPlayer {
             None => return,
         };
         let (tx, rx) = mpsc::sync_channel(1);
-        let _ = sender.send(SoundCommand::Play {
-            custom_path: self.start_sound_path.clone(),
-            bundled: START_SOUND,
-            done: Some(tx),
-        });
-        let _ = rx.recv();
+        if sender
+            .send(SoundCommand::Play {
+                custom_path: self.start_sound_path.clone(),
+                bundled: START_SOUND,
+                done: Some(tx),
+            })
+            .is_err()
+        {
+            tracing::warn!("feedback thread unavailable, skipping start sound");
+            return;
+        }
+        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+            tracing::warn!("timed out waiting for start sound playback");
+        }
     }
 
     /// Blocks until the stop sound has finished playing.
@@ -125,12 +147,20 @@ impl FeedbackPlayer {
             None => return,
         };
         let (tx, rx) = mpsc::sync_channel(1);
-        let _ = sender.send(SoundCommand::Play {
-            custom_path: self.stop_sound_path.clone(),
-            bundled: STOP_SOUND,
-            done: Some(tx),
-        });
-        let _ = rx.recv();
+        if sender
+            .send(SoundCommand::Play {
+                custom_path: self.stop_sound_path.clone(),
+                bundled: STOP_SOUND,
+                done: Some(tx),
+            })
+            .is_err()
+        {
+            tracing::warn!("feedback thread unavailable, skipping stop sound");
+            return;
+        }
+        if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+            tracing::warn!("timed out waiting for stop sound playback");
+        }
     }
 }
 
@@ -168,4 +198,22 @@ fn play_on_stream(
 
     sink.sleep_until_end();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_feedback_is_noop() {
+        let player = FeedbackPlayer::new(false, "", "");
+        player.play_start();
+        player.play_stop();
+    }
+
+    #[test]
+    fn dropping_feedback_player_does_not_panic() {
+        let player = FeedbackPlayer::new(true, "", "");
+        drop(player);
+    }
 }

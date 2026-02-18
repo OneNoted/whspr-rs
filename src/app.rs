@@ -1,4 +1,7 @@
-use std::process::{Child, Command};
+use std::process::Child;
+
+#[cfg(feature = "osd")]
+use std::process::Command;
 
 use crate::audio::AudioRecorder;
 use crate::config::Config;
@@ -8,6 +11,11 @@ use crate::inject::TextInjector;
 use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
 pub async fn run(config: Config) -> Result<()> {
+    // Register signals before startup work to minimize early-signal races.
+    let mut sigusr1 =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     let feedback = FeedbackPlayer::new(
         config.feedback.enabled,
         &config.feedback.start_sound,
@@ -27,12 +35,6 @@ pub async fn run(config: Config) -> Result<()> {
     let model_path = config.resolved_model_path();
     let model_handle =
         tokio::task::spawn_blocking(move || WhisperLocal::new(&whisper_config, &model_path));
-
-    // Wait for SIGUSR1 (second invocation) or SIGINT/SIGTERM
-    let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
-        .expect("failed to register SIGUSR1 handler");
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to register SIGTERM handler");
 
     tokio::select! {
         _ = sigusr1.recv() => {
@@ -90,6 +92,7 @@ pub async fn run(config: Config) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "osd")]
 fn spawn_osd() -> Option<Child> {
     // Look for whspr-osd next to our own binary first, then fall back to PATH
     let osd_path = std::env::current_exe()
@@ -110,13 +113,30 @@ fn spawn_osd() -> Option<Child> {
     }
 }
 
+#[cfg(not(feature = "osd"))]
+fn spawn_osd() -> Option<Child> {
+    None
+}
+
 fn kill_osd(child: &mut Option<Child>) {
     if let Some(mut c) = child.take() {
-        let pid = c.id();
+        let pid = c.id() as libc::pid_t;
         unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+            libc::kill(pid, libc::SIGTERM);
         }
         let _ = c.wait();
         tracing::debug!("whspr-osd (pid {pid}) terminated");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kill_osd_none_is_noop() {
+        let mut child: Option<Child> = None;
+        kill_osd(&mut child);
+        assert!(child.is_none());
     }
 }

@@ -6,6 +6,8 @@ use cpal::{SampleFormat, StreamConfig};
 use crate::config::AudioConfig;
 use crate::error::{Result, WhsprError};
 
+const PREALLOC_SECONDS: usize = 120;
+
 pub struct AudioRecorder {
     config: AudioConfig,
     buffer: Arc<Mutex<Vec<f32>>>,
@@ -46,60 +48,96 @@ impl AudioRecorder {
             .unwrap_or_else(|_| "unknown".into());
         tracing::info!("using input device: {device_name}");
 
-        let stream_config = StreamConfig {
-            channels: 1,
-            sample_rate: self.config.sample_rate,
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        // Check if the device supports our desired config, fall back to supported config
-        let supported = device
-            .supported_input_configs()
-            .map_err(|e| WhsprError::Audio(format!("failed to get supported configs: {e}")))?;
-
-        let mut found_matching = false;
-        for cfg in supported {
-            if cfg.channels() == 1
-                && cfg.min_sample_rate() <= self.config.sample_rate
-                && cfg.max_sample_rate() >= self.config.sample_rate
-                && cfg.sample_format() == SampleFormat::F32
-            {
-                found_matching = true;
-                break;
-            }
-        }
-
-        if !found_matching {
+        let (stream_config, sample_format) = choose_input_config(&device, self.config.sample_rate)?;
+        if stream_config.channels != 1 {
             tracing::warn!(
-                "device may not natively support mono {}Hz f32, will attempt anyway",
-                self.config.sample_rate
+                "device input has {} channels; downmixing to mono",
+                stream_config.channels
             );
         }
+        tracing::info!(
+            "audio stream config: {} Hz, {} channels, {:?}",
+            stream_config.sample_rate,
+            stream_config.channels,
+            sample_format
+        );
 
         let buffer = Arc::clone(&self.buffer);
-        buffer.lock().expect("audio buffer lock").clear();
+        {
+            let mut guard = buffer
+                .lock()
+                .map_err(|_| WhsprError::Audio("audio buffer lock poisoned".into()))?;
+            guard.clear();
+            let prealloc_samples =
+                (self.config.sample_rate as usize).saturating_mul(PREALLOC_SECONDS);
+            let capacity = guard.capacity();
+            if capacity < prealloc_samples {
+                guard.reserve_exact(prealloc_samples - capacity);
+            }
+        }
+        let channels = stream_config.channels as usize;
 
+        // The callback still takes a mutex on the realtime thread. Preallocation
+        // and reserve calls reduce realloc pressure, but a lock-free buffer would
+        // be the next step for strict realtime guarantees.
         let err_fn = |err: cpal::StreamError| {
             tracing::error!("audio stream error: {err}");
         };
 
-        let stream = device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut buf) = buffer.lock() {
-                        buf.extend_from_slice(data);
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?;
+        let stream = match sample_format {
+            SampleFormat::F32 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_f32(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            SampleFormat::I16 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_i16(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            SampleFormat::U16 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        if let Ok(mut buf) = buffer.lock() {
+                            append_mono_u16(data, channels, &mut buf);
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| WhsprError::Audio(format!("failed to build input stream: {e}")))?,
+            other => {
+                return Err(WhsprError::Audio(format!(
+                    "unsupported input sample format: {other:?}"
+                )));
+            }
+        };
 
         stream
             .play()
             .map_err(|e| WhsprError::Audio(format!("failed to start audio stream: {e}")))?;
 
+        // Leak any previous stream to avoid the ALSA/PipeWire click artifact
+        // (see stop() comment for rationale).
+        if let Some(old) = self.stream.take() {
+            let _ = old.pause();
+            std::mem::forget(old);
+        }
         self.stream = Some(stream);
         tracing::info!("audio recording started");
         Ok(())
@@ -137,5 +175,141 @@ impl AudioRecorder {
         }
 
         Ok(buffer)
+    }
+}
+
+fn choose_input_config(
+    device: &cpal::Device,
+    sample_rate: u32,
+) -> Result<(StreamConfig, SampleFormat)> {
+    let supported = device
+        .supported_input_configs()
+        .map_err(|e| WhsprError::Audio(format!("failed to get supported configs: {e}")))?;
+
+    let mut best: Option<(u8, StreamConfig, SampleFormat)> = None;
+
+    for cfg in supported {
+        if cfg.min_sample_rate() > sample_rate || cfg.max_sample_rate() < sample_rate {
+            continue;
+        }
+        let format_score = match cfg.sample_format() {
+            SampleFormat::F32 => 3,
+            SampleFormat::I16 => 2,
+            SampleFormat::U16 => 1,
+            _ => 0,
+        };
+        if format_score == 0 {
+            continue;
+        }
+        // Prefer mono (20), then fewer channels over more (penalty scales with count)
+        let channel_score: u8 = if cfg.channels() == 1 {
+            20
+        } else {
+            10u8.saturating_sub(cfg.channels() as u8)
+        };
+        let score = channel_score + format_score;
+
+        let config = StreamConfig {
+            channels: cfg.channels(),
+            sample_rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let replace = best
+            .as_ref()
+            .map(|(best_score, _, _)| score > *best_score)
+            .unwrap_or(true);
+        if replace {
+            best = Some((score, config, cfg.sample_format()));
+        }
+    }
+
+    best.map(|(_, config, format)| (config, format))
+        .ok_or_else(|| {
+            WhsprError::Audio(format!(
+                "no supported input config for {} Hz (supported formats must be f32, i16, or u16)",
+                sample_rate
+            ))
+        })
+}
+
+fn append_mono_f32(data: &[f32], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend_from_slice(data);
+        return;
+    }
+    out.reserve(data.len() / channels);
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame.iter().copied().sum();
+        out.push(sum / frame.len() as f32);
+    }
+}
+
+fn append_mono_i16(data: &[i16], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
+        return;
+    }
+    out.reserve(data.len() / channels);
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame.iter().map(|s| *s as f32 / i16::MAX as f32).sum();
+        out.push(sum / frame.len() as f32);
+    }
+}
+
+fn append_mono_u16(data: &[u16], channels: usize, out: &mut Vec<f32>) {
+    if channels <= 1 {
+        out.extend(
+            data.iter()
+                .map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0),
+        );
+        return;
+    }
+    out.reserve(data.len() / channels);
+    for frame in data.chunks(channels) {
+        let sum: f32 = frame
+            .iter()
+            .map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0)
+            .sum();
+        out.push(sum / frame.len() as f32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn append_mono_f32_passthrough_for_single_channel() {
+        let mut out = Vec::new();
+        append_mono_f32(&[0.1, -0.2, 0.3], 1, &mut out);
+        assert_eq!(out, vec![0.1, -0.2, 0.3]);
+    }
+
+    #[test]
+    fn append_mono_f32_downmixes_stereo() {
+        let mut out = Vec::new();
+        append_mono_f32(&[1.0, -1.0, 0.5, 0.5], 2, &mut out);
+        assert!(approx_eq(out[0], 0.0, 1e-6));
+        assert!(approx_eq(out[1], 0.5, 1e-6));
+    }
+
+    #[test]
+    fn append_mono_i16_converts_to_f32() {
+        let mut out = Vec::new();
+        append_mono_i16(&[i16::MAX, i16::MIN], 1, &mut out);
+        assert!(approx_eq(out[0], 1.0, 1e-4));
+        assert!(out[1] < -0.99);
+    }
+
+    #[test]
+    fn append_mono_u16_downmixes_and_converts() {
+        let mut out = Vec::new();
+        append_mono_u16(&[0, u16::MAX], 2, &mut out);
+        assert!(approx_eq(out[0], 0.0, 0.01));
     }
 }

@@ -21,6 +21,7 @@ The two invocations communicate via PID file + `SIGUSR1` — no daemon, no IPC s
 - `wl-copy` (from `wl-clipboard`)
 - `uinput` access (for virtual keyboard paste)
 - NVIDIA GPU + CUDA toolkit (optional, for GPU acceleration)
+- If no compatible GPU is available, set `whisper.use_gpu = false` in config
 
 ## Install
 
@@ -43,6 +44,13 @@ Run the interactive setup wizard to download a model and generate config:
 
 ```sh
 whspr-rs setup
+```
+
+Use a custom config file for any command (including `setup` and `model`):
+
+```sh
+whspr-rs --config /path/to/config.toml setup
+whspr-rs --config /path/to/config.toml model select tiny
 ```
 
 Or manage models manually:
@@ -69,7 +77,7 @@ bindsym $mod+Alt+d exec whspr-rs
 
 ## Configuration
 
-Config lives at `~/.config/whspr-rs/config.toml`. Generated automatically by `whspr-rs setup`, or copy from `config.example.toml`:
+Config lives at `~/.config/whspr-rs/config.toml` by default. Generated automatically by `whspr-rs setup`, or copy from `config.example.toml`:
 
 ```toml
 [audio]
@@ -79,6 +87,8 @@ sample_rate = 16000
 [whisper]
 model_path = "~/.local/share/whspr-rs/ggml-large-v3-turbo.bin"
 language = "auto"      # or "en", "fr", "de", etc.
+use_gpu = true         # set false to force CPU
+flash_attn = true      # only used when use_gpu=true
 
 [feedback]
 enabled = true
