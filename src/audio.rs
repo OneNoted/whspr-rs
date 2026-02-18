@@ -62,7 +62,10 @@ impl AudioRecorder {
         );
 
         let buffer = Arc::clone(&self.buffer);
-        buffer.lock().expect("audio buffer lock").clear();
+        buffer
+            .lock()
+            .map_err(|_| WhsprError::Audio("audio buffer lock poisoned".into()))?
+            .clear();
         let channels = stream_config.channels as usize;
 
         let err_fn = |err: cpal::StreamError| {
@@ -117,6 +120,12 @@ impl AudioRecorder {
             .play()
             .map_err(|e| WhsprError::Audio(format!("failed to start audio stream: {e}")))?;
 
+        // Leak any previous stream to avoid the ALSA/PipeWire click artifact
+        // (see stop() comment for rationale).
+        if let Some(old) = self.stream.take() {
+            let _ = old.pause();
+            std::mem::forget(old);
+        }
         self.stream = Some(stream);
         tracing::info!("audio recording started");
         Ok(())
@@ -177,8 +186,13 @@ fn choose_input_config(device: &cpal::Device, sample_rate: u32) -> Result<(Strea
         if format_score == 0 {
             continue;
         }
-        let channel_score = if cfg.channels() == 1 { 2 } else { 1 };
-        let score = channel_score * 10 + format_score;
+        // Prefer mono (20), then fewer channels over more (penalty scales with count)
+        let channel_score: u8 = if cfg.channels() == 1 {
+            20
+        } else {
+            10u8.saturating_sub(cfg.channels() as u8)
+        };
+        let score = channel_score + format_score;
 
         let config = StreamConfig {
             channels: cfg.channels(),
