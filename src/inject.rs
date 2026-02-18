@@ -42,8 +42,12 @@ impl TextInjector {
             .spawn()
             .map_err(|e| WhsprError::Injection(format!("failed to spawn wl-copy: {e}")))?;
 
-        if let Some(mut stdin) = wl_copy.stdin.take() {
+        {
             use std::io::Write;
+            let mut stdin = wl_copy
+                .stdin
+                .take()
+                .ok_or_else(|| WhsprError::Injection("wl-copy stdin unavailable".into()))?;
             stdin
                 .write_all(text.as_bytes())
                 .map_err(|e| WhsprError::Injection(format!("wl-copy stdin write: {e}")))?;
