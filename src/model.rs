@@ -174,7 +174,7 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     let client = reqwest::Client::new();
 
     // Check for partial download to support resume
-    let existing_len = if part_path.exists() {
+    let mut existing_len = if part_path.exists() {
         std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0)
     } else {
         0
@@ -191,11 +191,25 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
         .await
         .map_err(|e| WhsprError::Download(format!("failed to start download: {e}")))?;
 
-    if !response.status().is_success() && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
-    {
+    let status = response.status();
+    if existing_len > 0 {
+        match status {
+            reqwest::StatusCode::PARTIAL_CONTENT => {}
+            reqwest::StatusCode::OK => {
+                println!("Server ignored range request, restarting download from zero");
+                existing_len = 0;
+            }
+            _ => {
+                return Err(WhsprError::Download(format!(
+                    "download failed with HTTP {}",
+                    status
+                )));
+            }
+        }
+    } else if !status.is_success() {
         return Err(WhsprError::Download(format!(
             "download failed with HTTP {}",
-            response.status()
+            status
         )));
     }
 
@@ -218,9 +232,14 @@ pub async fn download_model(name: &str) -> Result<PathBuf> {
     );
     pb.set_position(existing_len);
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut open_opts = tokio::fs::OpenOptions::new();
+    open_opts.create(true);
+    if existing_len > 0 {
+        open_opts.append(true);
+    } else {
+        open_opts.write(true).truncate(true);
+    }
+    let mut file = open_opts
         .open(&part_path)
         .await
         .map_err(|e| WhsprError::Download(format!("failed to open file: {e}")))?;
