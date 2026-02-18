@@ -235,3 +235,55 @@ async fn main() -> crate::error::Result<()> {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_lock_path(suffix: &str) -> PathBuf {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "whspr-rs-test-{suffix}-{}-{now}.pid",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn signal_existing_instance_cleans_invalid_pid_file() {
+        let path = temp_lock_path("invalid");
+        std::fs::write(&path, "not-a-pid").unwrap();
+        assert!(!signal_existing_instance(&path).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn signal_existing_instance_cleans_missing_process_pid_file() {
+        let path = temp_lock_path("missing-process");
+        std::fs::write(&path, "99999999").unwrap();
+        assert!(!signal_existing_instance(&path).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn try_acquire_pid_lock_uses_create_new_semantics() {
+        let path = temp_lock_path("acquire");
+        let lock = try_acquire_pid_lock(&path).unwrap();
+        assert!(path.exists());
+
+        let err = match try_acquire_pid_lock(&path) {
+            Ok(_) => panic!("lock acquisition should fail when file already exists"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        drop(lock);
+        assert!(!path.exists());
+
+        let lock2 = try_acquire_pid_lock(&path).unwrap();
+        drop(lock2);
+        assert!(!path.exists());
+    }
+}
