@@ -183,9 +183,11 @@ async fn transcribe_file(
             .await
             .map_err(|e| WhsprError::Transcription(format!("model loading task failed: {e}")))??;
 
-    let text = tokio::task::spawn_blocking(move || backend.transcribe(&samples, 16000))
-        .await
-        .map_err(|e| WhsprError::Transcription(format!("transcription task failed: {e}")))??;
+    let text = tokio::task::spawn_blocking(move || {
+        backend.transcribe(&samples, file_audio::TARGET_SAMPLE_RATE)
+    })
+    .await
+    .map_err(|e| WhsprError::Transcription(format!("transcription task failed: {e}")))??;
 
     if let Some(out_path) = output {
         tokio::fs::write(out_path, &text).await?;
