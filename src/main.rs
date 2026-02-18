@@ -19,34 +19,134 @@ use crate::cli::{Cli, Command, ModelAction};
 use crate::config::Config;
 use crate::transcribe::{TranscriptionBackend, WhisperLocal};
 
+struct PidLock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for PidLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn pid_file_path() -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(runtime_dir).join("whspr-rs.pid")
 }
 
-fn read_running_pid() -> Option<u32> {
-    let path = pid_file_path();
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let pid: u32 = contents.trim().parse().ok()?;
+fn read_pid_from_lock(path: &Path) -> Option<u32> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    contents.trim().parse().ok()
+}
 
-    // Verify the process is actually running
-    let proc_path = format!("/proc/{pid}");
-    if std::path::Path::new(&proc_path).exists() {
-        Some(pid)
-    } else {
-        // Stale PID file, clean up
-        let _ = std::fs::remove_file(&path);
-        None
+fn process_exists(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+fn pid_belongs_to_whspr(pid: u32) -> bool {
+    if !process_exists(pid) {
+        return false;
     }
+
+    let current_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+    let target_exe = std::fs::canonicalize(format!("/proc/{pid}/exe")).ok();
+
+    if let (Some(current), Some(target)) = (current_exe.as_ref(), target_exe.as_ref()) {
+        if current == target {
+            return true;
+        }
+    }
+
+    let current_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "whspr-rs".into());
+    let cmdline = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let Some(first_arg) = cmdline.split(|b| *b == 0).next() else {
+        return false;
+    };
+    if first_arg.is_empty() {
+        return false;
+    }
+    let first_arg = String::from_utf8_lossy(first_arg);
+    Path::new(first_arg.as_ref())
+        .file_name()
+        .map(|name| name.to_string_lossy() == current_name)
+        .unwrap_or(false)
 }
 
-fn write_pid_file() -> std::io::Result<()> {
+fn try_acquire_pid_lock(path: &Path) -> std::io::Result<PidLock> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    writeln!(file, "{}", std::process::id())?;
+
+    Ok(PidLock {
+        path: path.to_path_buf(),
+        _file: file,
+    })
+}
+
+fn signal_existing_instance(path: &Path) -> crate::error::Result<bool> {
+    let Some(pid) = read_pid_from_lock(path) else {
+        tracing::warn!("stale pid lock at {}, removing", path.display());
+        let _ = std::fs::remove_file(path);
+        return Ok(false);
+    };
+
+    if !pid_belongs_to_whspr(pid) {
+        tracing::warn!(
+            "pid lock at {} points to non-whspr process ({pid}), removing",
+            path.display()
+        );
+        let _ = std::fs::remove_file(path);
+        return Ok(false);
+    }
+
+    tracing::info!("sending toggle signal to running instance (pid {pid})");
+    let ret = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
+    if ret == 0 {
+        return Ok(true);
+    }
+
+    let err = std::io::Error::last_os_error();
+    tracing::warn!("failed to signal pid {pid}: {err}");
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        let _ = std::fs::remove_file(path);
+        return Ok(false);
+    }
+
+    Err(err.into())
+}
+
+fn acquire_or_signal_lock() -> crate::error::Result<Option<PidLock>> {
     let path = pid_file_path();
-    std::fs::write(&path, std::process::id().to_string())
-}
 
-fn remove_pid_file() {
-    let _ = std::fs::remove_file(pid_file_path());
+    for _ in 0..2 {
+        match try_acquire_pid_lock(&path) {
+            Ok(lock) => return Ok(Some(lock)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if signal_existing_instance(&path)? {
+                    return Ok(None);
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Err(crate::error::WhsprError::Config(format!(
+        "failed to acquire pid lock at {}",
+        path.display()
+    )))
 }
 
 fn init_tracing(verbose: u8) {
@@ -96,21 +196,9 @@ async fn transcribe_file(
 }
 
 async fn run_default(cli: &Cli) -> crate::error::Result<()> {
-    // Check if an instance is already recording
-    if let Some(pid) = read_running_pid() {
-        tracing::info!("sending toggle signal to running instance (pid {pid})");
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGUSR1) };
-        if ret != 0 {
-            tracing::warn!(
-                "failed to signal pid {pid}: {}",
-                std::io::Error::last_os_error()
-            );
-            let _ = std::fs::remove_file(pid_file_path());
-            // fall through to start new instance
-        } else {
-            return Ok(());
-        }
-    }
+    let Some(_pid_lock) = acquire_or_signal_lock()? else {
+        return Ok(());
+    };
 
     tracing::info!("whspr-rs v{}", env!("CARGO_PKG_VERSION"));
 
@@ -118,15 +206,7 @@ async fn run_default(cli: &Cli) -> crate::error::Result<()> {
     let config = Config::load(cli.config.as_deref())?;
     tracing::debug!("config loaded: {config:?}");
 
-    // Write PID file so a second invocation can signal us
-    write_pid_file()?;
-
-    // Ensure PID file is cleaned up on exit
-    let result = app::run(config).await;
-
-    remove_pid_file();
-
-    result
+    app::run(config).await
 }
 
 #[tokio::main]
